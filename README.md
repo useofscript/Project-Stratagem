@@ -12,7 +12,7 @@ Project Stratagem is a native Windows desktop control panel for the local Ollama
 - Token protection: encrypt the bridge token with Windows DPAPI for the current Windows account
 - Activity: view application events and open the individual service logs
 
-The app includes Dashboard, Settings, and Activity pages. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
+The app includes a redesigned command center, sidebar navigation, service-health indicators, quick actions, a Clank World connection panel, Settings, and Activity. A chess king icon is used for the app window and Windows executable. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
 
 ## Requirements
 
@@ -35,14 +35,14 @@ The executable is written to `target\release\Project-Stratagem.exe`.
 
 ## Download a Windows build
 
-Open the repository's Actions tab and run **Build Project Stratagem (Rust / Windows)**, or use the artifact produced by a pull request build. The workflow runs formatting checks, compiles/tests the Rust project, and uploads `Project-Stratagem.exe` as `Project-Stratagem-Windows`.
+Open the repository's Releases page to download the latest Windows executable or portable ZIP. Tagged versions automatically run formatting, compilation, tests, package the app, and create a prerelease with the Windows assets.
 
 ## First launch
 
 1. Open **Settings** and verify the path to your existing `bridge.mjs`.
 2. Verify the Node.js and `cloudflared.exe` paths. Stratagem searches the current `PATH` automatically, but you can browse to each executable.
 3. Set the token environment-variable name to what your bridge actually reads. It defaults to `BRIDGE_TOKEN`.
-4. Enter the same token configured in the bridge. You can generate a new value here, but generating it does not update the bridge or Cloudflare Worker automatically.
+4. Enter the token configured in the bridge. The app's Show and Copy controls let you retrieve the exact token for a direct Clank World setup.
 5. Select **Save encrypted token**, then **Save Settings**.
 6. Return to **Dashboard** and select **Start All**.
 

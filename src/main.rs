@@ -16,16 +16,16 @@ use std::{
 };
 
 const APP_NAME: &str = "Project Stratagem";
-const BG: Color32 = Color32::from_rgb(13, 17, 24);
-const PANEL: Color32 = Color32::from_rgb(22, 28, 38);
-const CARD: Color32 = Color32::from_rgb(28, 36, 48);
-const BORDER: Color32 = Color32::from_rgb(48, 59, 75);
-const TEXT: Color32 = Color32::from_rgb(229, 236, 245);
-const MUTED: Color32 = Color32::from_rgb(139, 153, 173);
-const ACCENT: Color32 = Color32::from_rgb(76, 155, 255);
-const GREEN: Color32 = Color32::from_rgb(71, 199, 133);
-const RED: Color32 = Color32::from_rgb(232, 102, 112);
-const AMBER: Color32 = Color32::from_rgb(234, 184, 91);
+const BG: Color32 = Color32::from_rgb(10, 12, 16);
+const PANEL: Color32 = Color32::from_rgb(17, 20, 26);
+const CARD: Color32 = Color32::from_rgb(23, 27, 34);
+const BORDER: Color32 = Color32::from_rgb(42, 47, 56);
+const TEXT: Color32 = Color32::from_rgb(237, 239, 242);
+const MUTED: Color32 = Color32::from_rgb(143, 151, 164);
+const ACCENT: Color32 = Color32::from_rgb(206, 165, 87);
+const GREEN: Color32 = Color32::from_rgb(76, 198, 132);
+const RED: Color32 = Color32::from_rgb(230, 98, 106);
+const AMBER: Color32 = Color32::from_rgb(223, 176, 93);
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -83,6 +83,7 @@ struct StratagemApp {
     tunnel_running: bool,
     last_status_check: Instant,
     saved_message: String,
+    icon_texture: egui::TextureHandle,
 }
 
 fn data_dir() -> PathBuf {
@@ -262,6 +263,18 @@ impl StratagemApp {
             style.spacing.button_padding = Vec2::new(12.0, 8.0);
         });
 
+        let icon_rgba = image::load_from_memory(include_bytes!("../assets/stratagem-icon.png"))
+            .expect("embedded Stratagem icon must be valid PNG")
+            .to_rgba8();
+        let icon_texture = cc.egui_ctx.load_texture(
+            "stratagem-icon",
+            egui::ColorImage::from_rgba_unmultiplied(
+                [icon_rgba.width() as usize, icon_rgba.height() as usize],
+                icon_rgba.as_raw(),
+            ),
+            egui::TextureOptions::LINEAR,
+        );
+
         let root = data_dir();
         let logs_dir = root.join("logs");
         let _ = fs::create_dir_all(&logs_dir);
@@ -296,6 +309,7 @@ impl StratagemApp {
             tunnel_running: false,
             last_status_check: Instant::now() - Duration::from_secs(10),
             saved_message: String::new(),
+            icon_texture,
         };
         app.log("Project Stratagem started. Native Rust build.");
         app
@@ -631,90 +645,116 @@ impl StratagemApp {
         egui::Frame::group(ui.style())
             .fill(CARD)
             .stroke(Stroke::new(1.0, BORDER))
-            .inner_margin(egui::Margin::same(14))
+            .inner_margin(egui::Margin::same(16))
             .show(ui, |ui| {
-                ui.set_min_width(180.0);
-                ui.label(RichText::new(title.to_uppercase()).size(11.0).strong().color(MUTED));
-                ui.add_space(7.0);
-                let color = if healthy { GREEN } else { RED };
-                ui.label(RichText::new(value).size(20.0).strong().color(color));
-                ui.add_space(3.0);
+                ui.set_min_width(190.0);
+                ui.horizontal(|ui| {
+                    let color = if healthy { GREEN } else { RED };
+                    ui.label(RichText::new("●").color(color).size(14.0));
+                    ui.label(RichText::new(title).size(12.0).strong().color(MUTED));
+                });
+                ui.add_space(8.0);
+                ui.label(RichText::new(value).size(22.0).strong().color(if healthy { GREEN } else { RED }));
                 ui.label(RichText::new(detail).size(11.0).color(MUTED));
             });
     }
 
     fn dashboard(&mut self, ui: &mut egui::Ui) {
-        ui.heading(RichText::new("Control center").size(24.0).strong());
-        ui.label(RichText::new("Manage the local AI gateway stack from one Windows application.").color(MUTED));
-        ui.add_space(15.0);
+        ui.heading(RichText::new("Command center").size(28.0).strong());
+        ui.label(RichText::new("The local AI stack, at a glance.").color(MUTED));
+        ui.add_space(14.0);
 
+        egui::Frame::group(ui.style())
+            .fill(Color32::from_rgb(28, 28, 31))
+            .stroke(Stroke::new(1.0, Color32::from_rgb(74, 63, 44)))
+            .inner_margin(egui::Margin::same(22))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("STRATEGEM CONTROL").size(10.0).strong().color(ACCENT));
+                        ui.add_space(7.0);
+                        ui.heading(RichText::new("Your local AI.\nUnder command.").size(25.0).strong());
+                        ui.label(RichText::new("Start your model server, bridge, and secure tunnel in one move.").color(MUTED));
+                        ui.add_space(12.0);
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.add_sized([138.0, 38.0], egui::Button::new(RichText::new("▶  START ALL").strong()).fill(Color32::from_rgb(37, 110, 75))).clicked() {
+                                self.start_all();
+                            }
+                            if ui.add_sized([110.0, 38.0], egui::Button::new(RichText::new("■  STOP ALL").strong()).fill(Color32::from_rgb(83, 43, 46))).clicked() {
+                                self.stop_all();
+                            }
+                        });
+                    });
+                });
+            });
+
+        ui.add_space(14.0);
+        ui.horizontal(|ui| {
+            ui.heading("Services");
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.small_button("↻ Refresh").clicked() {
+                    self.last_status_check = Instant::now() - Duration::from_secs(3);
+                }
+            });
+        });
         ui.columns(3, |columns| {
-            Self::status_card(
-                &mut columns[0],
-                "Ollama · 11434",
-                if self.ollama_online { "ONLINE" } else { "OFFLINE" },
-                "Local model server",
-                self.ollama_online,
-            );
-            Self::status_card(
-                &mut columns[1],
-                "Node bridge · 11435",
-                if self.bridge_online { "ONLINE" } else { "OFFLINE" },
-                "Gateway bridge endpoint",
-                self.bridge_online,
-            );
-            Self::status_card(
-                &mut columns[2],
-                "Cloudflare Tunnel",
-                if self.tunnel_running { "RUNNING" } else { "STOPPED" },
-                "Quick Tunnel process",
-                self.tunnel_running,
-            );
+            Self::status_card(&mut columns[0], "Ollama · 11434", if self.ollama_online { "Online" } else { "Offline" }, "Model server", self.ollama_online);
+            Self::status_card(&mut columns[1], "Bridge · 11435", if self.bridge_online { "Online" } else { "Offline" }, "OpenAI-compatible API", self.bridge_online);
+            Self::status_card(&mut columns[2], "Cloudflare Tunnel", if self.tunnel_running { "Running" } else { "Stopped" }, "Public connection", self.tunnel_running);
         });
 
-        ui.add_space(18.0);
-        ui.heading("Services");
-        ui.label(RichText::new("Start the stack in order, or manage each service separately.").color(MUTED));
-        ui.add_space(7.0);
+        ui.add_space(14.0);
+        ui.columns(2, |columns| {
+            egui::Frame::group(columns[0].style())
+                .fill(CARD)
+                .stroke(Stroke::new(1.0, BORDER))
+                .inner_margin(egui::Margin::same(16))
+                .show(&mut columns[0], |ui| {
+                    ui.heading("Quick actions");
+                    ui.label(RichText::new("Start or test a service individually.").color(MUTED).size(12.0));
+                    ui.add_space(9.0);
+                    if ui.button("Start Ollama").clicked() { self.start_ollama(); }
+                    if ui.button("Start Bridge").clicked() { self.start_bridge(); }
+                    if ui.button("Start Cloudflare Tunnel").clicked() { self.start_tunnel(); }
+                    ui.separator();
+                    if ui.button("Test Ollama API").clicked() { self.test_ollama(); }
+                    if ui.button("Test Bridge Token").clicked() { self.test_bridge_auth(); }
+                });
 
-        let mut start_all = false;
-        let mut stop_all = false;
-        let mut start_ollama = false;
-        let mut start_bridge = false;
-        let mut start_tunnel = false;
-        let mut test_ollama = false;
-        let mut test_bridge_auth = false;
-
-        ui.horizontal_wrapped(|ui| {
-            start_all = ui.add_sized([142.0, 38.0], egui::Button::new(RichText::new("START ALL").strong()).fill(Color32::from_rgb(30, 125, 83))).clicked();
-            stop_all = ui.add_sized([118.0, 38.0], egui::Button::new(RichText::new("STOP ALL").strong()).fill(Color32::from_rgb(145, 54, 64))).clicked();
-            test_ollama = ui.add_sized([142.0, 38.0], egui::Button::new("TEST OLLAMA API")).clicked();
-            test_bridge_auth = ui.add_sized([142.0, 38.0], egui::Button::new("TEST BRIDGE AUTH")).clicked();
+            egui::Frame::group(columns[1].style())
+                .fill(CARD)
+                .stroke(Stroke::new(1.0, BORDER))
+                .inner_margin(egui::Margin::same(16))
+                .show(&mut columns[1], |ui| {
+                    ui.heading("Clank World connection");
+                    ui.label(RichText::new("Direct connection · No separate Worker key").color(MUTED).size(12.0));
+                    ui.add_space(7.0);
+                    let url = self.current_tunnel_url().map(|u| format!("{u}/v1"));
+                    ui.label("Base URL");
+                    ui.label(RichText::new(url.as_deref().unwrap_or("Tunnel URL not detected yet")).monospace().color(TEXT));
+                    if let Some(url) = url.as_ref() {
+                        if ui.button("Copy Base URL").clicked() {
+                            ui.ctx().copy_text(url.clone());
+                            self.saved_message = "Base URL copied".to_owned();
+                        }
+                    }
+                    if ui.button("Copy API Key (Bridge Token)").clicked() && !self.token.trim().is_empty() {
+                        ui.ctx().copy_text(self.token.trim().to_owned());
+                        self.saved_message = "Bridge token copied".to_owned();
+                    }
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Clank World API Key = your saved Bridge Token. Use the exact Ollama model tag.").color(AMBER).size(11.0));
+                });
         });
-        ui.add_space(8.0);
-        ui.horizontal_wrapped(|ui| {
-            start_ollama = ui.button("Start Ollama").clicked();
-            start_bridge = ui.button("Start Bridge").clicked();
-            start_tunnel = ui.button("Start Tunnel").clicked();
-        });
 
-        if start_all { self.start_all(); }
-        if stop_all { self.stop_all(); }
-        if start_ollama { self.start_ollama(); }
-        if start_bridge { self.start_bridge(); }
-        if start_tunnel { self.start_tunnel(); }
-        if test_ollama { self.test_ollama(); }
-        if test_bridge_auth { self.test_bridge_auth(); }
-
-        ui.add_space(18.0);
+        ui.add_space(12.0);
         egui::Frame::group(ui.style())
             .fill(PANEL)
             .stroke(Stroke::new(1.0, BORDER))
-            .inner_margin(egui::Margin::same(14))
+            .inner_margin(egui::Margin::same(13))
             .show(ui, |ui| {
-                ui.label(RichText::new("IMPORTANT").strong().color(AMBER));
-                ui.add_space(4.0);
-                ui.label("A Quick Tunnel creates a temporary public URL. Stratagem starts cloudflared and records its output, but it does not edit your Cloudflare Worker URL or remote secret. Those values must match your current bridge configuration.");
+                ui.label(RichText::new("QUICK TUNNEL").strong().color(AMBER));
+                ui.label("Cloudflare Quick Tunnel addresses are temporary. If the tunnel restarts, copy the newly generated URL again.");
             });
     }
 
@@ -780,6 +820,7 @@ impl StratagemApp {
                 ui.add_space(6.0);
                 ui.label("Bridge token environment variable");
                 ui.text_edit_singleline(&mut self.settings.token_env);
+                ui.label(RichText::new("Must match the variable name read by bridge.mjs. Usually BRIDGE_TOKEN.").size(11.0).color(MUTED));
                 ui.add_space(6.0);
                 ui.label("Bridge token");
                 ui.horizontal(|ui| {
@@ -861,11 +902,14 @@ impl StratagemApp {
         ui.label(RichText::new("Application events are shown here. Process output is saved to individual log files.").color(MUTED));
         ui.add_space(10.0);
 
+        let mut copy_activity = false;
         egui::Frame::group(ui.style())
             .fill(Color32::from_rgb(8, 12, 18))
             .stroke(Stroke::new(1.0, BORDER))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
+                ui.set_min_height(230.0);
+                ui.set_max_height(400.0);
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
                     if let Ok(entries) = self.logs.lock() {
                         for entry in entries.iter() {
@@ -876,12 +920,19 @@ impl StratagemApp {
             });
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
+            copy_activity = ui.button("Copy activity log").clicked();
             for name in ["ollama.log", "bridge.log", "tunnel.log", "stratagem.log"] {
                 if ui.button(format!("Open {name}")).clicked() {
                     Self::open_path(&self.logs_dir.join(name));
                 }
             }
         });
+        if copy_activity {
+            if let Ok(entries) = self.logs.lock() {
+                ui.ctx().copy_text(entries.iter().cloned().collect::<Vec<_>>().join("\\n"));
+                self.saved_message = "Activity log copied to clipboard".to_owned();
+            }
+        }
     }
 }
 
@@ -889,59 +940,134 @@ impl eframe::App for StratagemApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.update_status();
         ui.ctx().request_repaint_after(Duration::from_millis(800));
+        let full_width = ui.available_width();
+        let sidebar_width = 204.0;
+        let main_width = (full_width - sidebar_width - 18.0 - 72.0).max(360.0);
 
-        ui.vertical(|ui| {
+        ui.horizontal(|ui| {
             egui::Frame::default()
-                .fill(PANEL)
-                .stroke(Stroke::new(1.0, BORDER))
-                .inner_margin(egui::Margin::symmetric(18, 13))
+                .fill(Color32::from_rgb(13, 15, 19))
+                .inner_margin(egui::Margin::symmetric(14, 16))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("PROJECT STRATAGEM").size(19.0).strong().color(TEXT));
-                            ui.label(RichText::new("LOCAL AI GATEWAY CONTROL").size(10.0).strong().color(MUTED));
+                    ui.set_width(sidebar_width);
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.image((self.icon_texture.id(), Vec2::splat(48.0)));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("STRATAGEM").size(18.0).strong().color(TEXT));
+                                ui.label(RichText::new("LOCAL AI CONTROL").size(9.0).strong().color(ACCENT));
+                            });
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.selectable_label(self.page == Page::Activity, "Activity").clicked() {
-                                self.page = Page::Activity;
-                            }
-                            if ui.selectable_label(self.page == Page::Settings, "Settings").clicked() {
-                                self.page = Page::Settings;
-                            }
-                            if ui.selectable_label(self.page == Page::Dashboard, "Dashboard").clicked() {
-                                self.page = Page::Dashboard;
-                            }
-                        });
+                        ui.add_space(24.0);
+                        ui.label(RichText::new("WORKSPACE").size(10.0).strong().color(MUTED));
+                        ui.add_space(6.0);
+                        for (page, label) in [
+                            (Page::Dashboard, "◈  Overview"),
+                            (Page::Settings, "⚙  Settings"),
+                            (Page::Activity, "≡  Activity logs"),
+                        ] {
+                            let selected = self.page == page;
+                            egui::Frame::default()
+                                .fill(if selected { Color32::from_rgb(43, 36, 26) } else { Color32::TRANSPARENT })
+                                .inner_margin(egui::Margin::symmetric(5, 3))
+                                .show(ui, |ui| {
+                                    if ui.add_sized(
+                                        [sidebar_width - 34.0, 36.0],
+                                        egui::Button::new(RichText::new(label).size(14.0).strong())
+                                            .fill(if selected { Color32::from_rgb(43, 36, 26) } else { CARD }),
+                                    ).clicked() {
+                                        self.page = page;
+                                    }
+                                });
+                        }
+                        ui.add_space(22.0);
+                        ui.label(RichText::new("SERVICES").size(10.0).strong().color(MUTED));
+                        ui.add_space(8.0);
+                        for (label, online) in [
+                            ("Ollama", self.ollama_online),
+                            ("Bridge", self.bridge_online),
+                            ("Tunnel", self.tunnel_running),
+                        ] {
+                            let dot = if online { GREEN } else { RED };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("●").color(dot));
+                                ui.label(RichText::new(label).color(TEXT).size(12.0));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(if online { "READY" } else { "OFF" }).size(9.0).color(if online { GREEN } else { MUTED }));
+                                });
+                            });
+                        }
+                        ui.add_space(20.0);
+                        ui.separator();
+                        ui.label(RichText::new("0.3.0 · STRATEGIST EDITION").size(9.0).color(MUTED));
+                        ui.label(RichText::new("Local-first. Your hardware.").size(10.0).color(MUTED));
                     });
                 });
 
-            ui.add_space(14.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                match self.page {
-                    Page::Dashboard => self.dashboard(ui),
-                    Page::Settings => self.settings_page(ui),
-                    Page::Activity => self.activity_page(ui),
-                }
-                ui.add_space(18.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Project Stratagem · Native Rust build").size(10.0).color(MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Open data folder").clicked() {
-                            Self::open_path(&data_dir());
-                        }
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.set_width(main_width);
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(22, 16))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                let (title, subtitle) = match self.page {
+                                    Page::Dashboard => ("Command center", "System overview and connection controls"),
+                                    Page::Settings => ("Settings", "Configure local services and authentication"),
+                                    Page::Activity => ("Activity", "Service output and diagnostic history"),
+                                };
+                                ui.label(RichText::new(title).size(23.0).strong().color(TEXT));
+                                ui.label(RichText::new(subtitle).size(11.0).color(MUTED));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Open data folder").clicked() {
+                                    Self::open_path(&data_dir());
+                                }
+                            });
+                        });
+                        ui.add_space(15.0);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            match self.page {
+                                Page::Dashboard => self.dashboard(ui),
+                                Page::Settings => self.settings_page(ui),
+                                Page::Activity => self.activity_page(ui),
+                            }
+                            ui.add_space(18.0);
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("PROJECT STRATAGEM · WINDOWS DESKTOP").size(10.0).color(MUTED));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Open log folder").clicked() {
+                                        Self::open_path(&self.logs_dir);
+                                    }
+                                });
+                            });
+                        });
                     });
-                });
             });
         });
+    }
+}
+
+fn app_icon() -> egui::IconData {
+    let rgba = image::load_from_memory(include_bytes!("../assets/stratagem-icon.png"))
+        .expect("embedded Stratagem icon must be valid PNG")
+        .to_rgba8();
+    egui::IconData {
+        rgba: rgba.as_raw().to_vec(),
+        width: rgba.width(),
+        height: rgba.height(),
     }
 }
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 780.0])
-            .with_min_inner_size([940.0, 680.0]),
+            .with_inner_size([1240.0, 860.0])
+            .with_min_inner_size([980.0, 700.0])
+            .with_icon(app_icon()),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };

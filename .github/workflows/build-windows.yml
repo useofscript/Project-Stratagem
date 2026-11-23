@@ -2,8 +2,6 @@ name: Build Project Stratagem Windows App
 
 on:
   workflow_dispatch:
-  release:
-    types: [published]
   pull_request:
     branches:
       - main
@@ -26,6 +24,9 @@ jobs:
 
       - name: Install stable Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Format Rust source
+        run: cargo fmt --all
 
       - name: Check Rust project
         run: cargo check --release
@@ -51,11 +52,21 @@ jobs:
           path: dist/*
           retention-days: 30
 
-      - name: Attach executable to GitHub Release
-        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main'
+      - name: Create release and attach app assets
+        if: startsWith(github.ref, 'refs/tags/') || (github.ref == 'refs/heads/main' && contains(github.event.head_commit.message, '[release]'))
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ github.event.release.tag_name || (startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.2.0') }}
+          RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || '0.3.0' }}
         shell: pwsh
         run: |
+          gh release view "$env:RELEASE_TAG" --json tagName 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            if ($env:GITHUB_REF -eq "refs/heads/main") {
+              gh api "repos/$env:GITHUB_REPOSITORY/git/refs" -f ref="refs/tags/$env:RELEASE_TAG" -f sha="$env:GITHUB_SHA"
+              if ($LASTEXITCODE -ne 0) { throw "Could not create version tag." }
+            }
+            gh release create "$env:RELEASE_TAG" --title "Project Stratagem $env:RELEASE_TAG" --notes "Chess king identity, redesigned command center, and streamlined direct connection setup." --prerelease
+            if ($LASTEXITCODE -ne 0) { throw "Could not create GitHub Release." }
+          }
           gh release upload "$env:RELEASE_TAG" dist/Project-Stratagem.exe dist/Project-Stratagem-Windows-Portable.zip dist/README.txt --clobber
+          if ($LASTEXITCODE -ne 0) { throw "Could not upload release assets." }
