@@ -548,6 +548,56 @@ impl StratagemApp {
         });
     }
 
+    fn test_bridge_auth(&mut self) {
+        let token = self.token.trim().to_owned();
+        let logs = Arc::clone(&self.logs);
+        let log_path = self.log_path.clone();
+        self.log("Testing bridge authentication at http://127.0.0.1:11435/v1/models ...");
+        thread::spawn(move || {
+            let result = reqwest::blocking::Client::builder()
+                .timeout(Duration::from_secs(8))
+                .build()
+                .map_err(|error| error.to_string())
+                .and_then(|client| {
+                    client
+                        .get("http://127.0.0.1:11435/v1/models")
+                        .bearer_auth(&token)
+                        .send()
+                        .map_err(|error| error.to_string())
+                });
+            match result {
+                Ok(response) if response.status().is_success() => {
+                    push_log(&logs, &log_path, format!("Bridge auth accepted. /v1/models returned HTTP {}.", response.status()));
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
+                    push_log(&logs, &log_path, format!("Bridge rejected the saved token (HTTP {}). Clank World will reject the same token until bridge auth is corrected.", response.status()));
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_default();
+                    let excerpt = body.chars().take(240).collect::<String>();
+                    push_log(&logs, &log_path, format!("Bridge endpoint responded with HTTP {status}; this is not an authentication success. Response: {excerpt}"));
+                }
+                Err(error) => push_log(&logs, &log_path, format!("Bridge auth test failed to reach the bridge: {error}")),
+            }
+        });
+    }
+
+    fn current_tunnel_url(&self) -> Option<String> {
+        let contents = fs::read_to_string(self.logs_dir.join("tunnel.log")).ok()?;
+        for line in contents.lines().rev() {
+            if let Some(start) = line.find("https://") {
+                let tail = &line[start..];
+                let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
+                let candidate = tail[..end].trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ')'));
+                if candidate.contains(".trycloudflare.com") {
+                    return Some(candidate.to_owned());
+                }
+            }
+        }
+        None
+    }
+
     fn update_status(&mut self) {
         if self.last_status_check.elapsed() < Duration::from_secs(2) {
             return;
@@ -633,11 +683,13 @@ impl StratagemApp {
         let mut start_bridge = false;
         let mut start_tunnel = false;
         let mut test_ollama = false;
+        let mut test_bridge_auth = false;
 
         ui.horizontal_wrapped(|ui| {
             start_all = ui.add_sized([142.0, 38.0], egui::Button::new(RichText::new("START ALL").strong()).fill(Color32::from_rgb(30, 125, 83))).clicked();
             stop_all = ui.add_sized([118.0, 38.0], egui::Button::new(RichText::new("STOP ALL").strong()).fill(Color32::from_rgb(145, 54, 64))).clicked();
             test_ollama = ui.add_sized([142.0, 38.0], egui::Button::new("TEST OLLAMA API")).clicked();
+            test_bridge_auth = ui.add_sized([142.0, 38.0], egui::Button::new("TEST BRIDGE AUTH")).clicked();
         });
         ui.add_space(8.0);
         ui.horizontal_wrapped(|ui| {
@@ -652,6 +704,7 @@ impl StratagemApp {
         if start_bridge { self.start_bridge(); }
         if start_tunnel { self.start_tunnel(); }
         if test_ollama { self.test_ollama(); }
+        if test_bridge_auth { self.test_bridge_auth(); }
 
         ui.add_space(18.0);
         egui::Frame::group(ui.style())
@@ -738,7 +791,12 @@ impl StratagemApp {
                     if ui.button(if self.show_token { "Hide" } else { "Show" }).clicked() {
                         self.show_token = !self.show_token;
                     }
+                    if ui.button("Copy token").clicked() && !self.token.trim().is_empty() {
+                        ui.ctx().copy_text(self.token.trim().to_owned());
+                        self.saved_message = "Bridge token copied to clipboard".to_owned();
+                    }
                 });
+                ui.label(RichText::new("For a direct Clank World connection, the API key must be this exact bridge token. Do not use a separate Worker API_KEY here.").size(11.0).color(AMBER));
                 ui.horizontal(|ui| {
                     if ui.button("Generate token").clicked() {
                         self.generate_token();
@@ -749,6 +807,35 @@ impl StratagemApp {
                 });
             });
 
+        ui.add_space(12.0);
+        egui::Frame::group(ui.style())
+            .fill(PANEL)
+            .stroke(Stroke::new(1.0, BORDER))
+            .inner_margin(egui::Margin::same(14))
+            .show(ui, |ui| {
+                ui.heading("Clank World · Direct Quick Tunnel");
+                ui.label(RichText::new("Use these values when connecting directly to Stratagem's Cloudflare Quick Tunnel.").color(MUTED));
+                let tunnel_url = self.current_tunnel_url();
+                let base_url = tunnel_url.map(|url| format!("{url}/v1"));
+                ui.label("Base URL");
+                ui.label(RichText::new(base_url.as_deref().unwrap_or("Tunnel URL not found. Start the tunnel, then check Activity > tunnel.log.")).monospace());
+                if let Some(url) = base_url.as_ref() {
+                    if ui.button("Copy Clank World Base URL").clicked() {
+                        ui.ctx().copy_text(url.clone());
+                        self.saved_message = "Clank World Base URL copied".to_owned();
+                    }
+                }
+                if ui.button("Copy API key (bridge token)").clicked() && !self.token.trim().is_empty() {
+                    ui.ctx().copy_text(self.token.trim().to_owned());
+                    self.saved_message = "Bridge token copied. Paste it as Clank World API Key.".to_owned();
+                }
+                ui.label(RichText::new("Clank World API Key = Bridge token. Model name must be an exact Ollama model tag.").size(11.0).color(AMBER));
+                ui.horizontal(|ui| {
+                    if ui.button("Test bridge token locally").clicked() {
+                        self.test_bridge_auth();
+                    }
+                });
+            });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
             if ui.add_sized([150.0, 36.0], egui::Button::new(RichText::new("SAVE SETTINGS").strong()).fill(ACCENT)).clicked() {
