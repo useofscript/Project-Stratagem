@@ -1044,7 +1044,11 @@ fn app_icon() -> egui::IconData {
     let rgba = image::load_from_memory(include_bytes!("../assets/stratagem-icon.png"))
         .expect("embedded Stratagem icon must be valid PNG")
         .to_rgba8();
-    egui::IconData::from_rgba(rgba.as_raw().to_vec(), rgba.width(), rgba.height())
+    egui::IconData {
+        rgba: rgba.as_raw().to_vec(),
+        width: rgba.width(),
+        height: rgba.height(),
+    }
 }
 
 fn main() -> eframe::Result {
@@ -1052,7 +1056,7 @@ fn main() -> eframe::Result {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1240.0, 860.0])
             .with_min_inner_size([980.0, 700.0])
-            .with_icon(Some(app_icon())),
+            .with_icon(app_icon()),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
