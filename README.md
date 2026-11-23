@@ -1,44 +1,69 @@
 # Project Stratagem
 
-Project Stratagem is a Windows desktop control panel for the local Ollama gateway stack.
+Project Stratagem is a native Windows desktop control panel for the local Ollama gateway stack. The interface and process manager are written in Rust and rendered with eframe/egui. It is a real desktop executable, not a browser-based dashboard or a Python wrapper.
 
-## Features
-- Start Ollama, Node bridge, and Cloudflare Quick Tunnel from one button
-- Stop only processes launched by Stratagem (other Windows services are left alone)
-- Live status indicators for local ports 11434 and 11435 and tunnel process
-- Test Ollama API and list installed models
-- Browse/select bridge script, Node.js, and cloudflared paths
-- Persist app configuration under `%LOCALAPPDATA%\\ProjectStratagem`
-- Encrypt bridge token with Windows DPAPI, scoped to the current Windows account
+## What it manages
+
+- Ollama: detect port 11434, launch `ollama serve`, and test `/api/tags` to list installed models
+- Node bridge: launch the existing `bridge.mjs` with the configured token environment variable
+- Cloudflare Tunnel: launch `cloudflared tunnel --url <target>` and write process output to its own log
+- Process control: stop only processes started by Stratagem; services already running before launch are left alone
+- Configuration: save executable paths and local URLs under `%LOCALAPPDATA%\ProjectStratagem`
+- Token protection: encrypt the bridge token with Windows DPAPI for the current Windows account
+- Activity: view application events and open the individual service logs
+
+The app includes Dashboard, Settings, and Activity pages. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
 
 ## Requirements
-- Windows 10 or 11
-- Ollama
-- Node.js
-- cloudflared
-- The gateway's existing `bridge.mjs` file
 
-## Running from source
-Install Python 3.12+ and run:
+- Windows 10 or Windows 11 (64-bit)
+- [Ollama](https://ollama.com/download)
+- [Node.js](https://nodejs.org/)
+- [Cloudflare Tunnel / cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
+- Your existing `bridge.mjs` gateway script
+
+## Build from source
+
+Install the Rust stable toolchain, then run from the repository root:
 
 ```powershell
-python app.py
+cargo build --release
+.\target\release\Project-Stratagem.exe
 ```
 
-## Download the Windows EXE
-Use the Actions tab and run **Build Project Stratagem for Windows** to build a portable `Project-Stratagem.exe`. Tag pushes matching `v*` also trigger the build. The workflow uploads the EXE as a downloadable artifact.
+The executable is written to `target\release\Project-Stratagem.exe`.
 
-## First-time configuration
-1. Launch Project Stratagem.
-2. Browse to the existing `bridge.mjs` if the auto-detected path is incorrect.
-3. Confirm the Node and cloudflared paths.
-4. Enter the bridge token. A generated token is only useful if the bridge and any gateway/Worker secret are configured with the same token. The environment variable name defaults to `BRIDGE_TOKEN`; change it if your bridge expects another name.
-5. Click **Save Token** and **Save Settings**.
-6. Click **Start All**. The Cloudflare Quick Tunnel URL is temporary; see `%LOCALAPPDATA%\\ProjectStratagem\\logs\\tunnel.log`.
+## Download a Windows build
 
-**Important:** The app starts a Quick Tunnel but does not automatically edit Cloudflare Worker settings or remote gateway configuration. Check the tunnel log and update your Worker endpoint/secret as needed.
+Open the repository's Actions tab and run **Build Project Stratagem (Rust / Windows)**, or use the artifact produced by a pull request build. The workflow runs formatting checks, compiles/tests the Rust project, and uploads `Project-Stratagem.exe` as `Project-Stratagem-Windows`.
 
-## App data and logs
-- Settings: `%LOCALAPPDATA%\\ProjectStratagem\\settings.json`
-- Token: `%LOCALAPPDATA%\\ProjectStratagem\\token.dpapi` (encrypted with DPAPI)
-- Logs: `%LOCALAPPDATA%\\ProjectStratagem\\logs`
+## First launch
+
+1. Open **Settings** and verify the path to your existing `bridge.mjs`.
+2. Verify the Node.js and `cloudflared.exe` paths. Stratagem searches the current `PATH` automatically, but you can browse to each executable.
+3. Set the token environment-variable name to what your bridge actually reads. It defaults to `BRIDGE_TOKEN`.
+4. Enter the same token configured in the bridge. You can generate a new value here, but generating it does not update the bridge or Cloudflare Worker automatically.
+5. Select **Save encrypted token**, then **Save Settings**.
+6. Return to **Dashboard** and select **Start All**.
+
+The default Ollama URL is `http://127.0.0.1:11434`; the default bridge/tunnel target is `http://127.0.0.1:11435`.
+
+## Cloudflare note
+
+Stratagem starts a **Quick Tunnel**, which creates a temporary public URL. It records cloudflared output in `%LOCALAPPDATA%\ProjectStratagem\logs\tunnel.log`. It does not edit your Cloudflare Worker URL, Worker secret, or remote gateway configuration. Those settings still need to match the active tunnel and bridge token.
+
+## Data and logs
+
+- Settings: `%LOCALAPPDATA%\ProjectStratagem\settings.json`
+- Encrypted token: `%LOCALAPPDATA%\ProjectStratagem\token.dpapi`
+- Application log: `%LOCALAPPDATA%\ProjectStratagem\logs\stratagem.log`
+- Service logs: `ollama.log`, `bridge.log`, and `tunnel.log` in the same logs directory
+
+The token file is protected with Windows DPAPI and is intended to be decrypted by the same Windows user account on the same machine. Do not expect it to be portable between Windows accounts or PCs.
+
+## Safety behavior
+
+- Stratagem checks whether ports 11434 and 11435 are already responding before starting duplicate services.
+- **Stop All** terminates only child processes that Stratagem itself launched.
+- Existing Ollama services or bridge processes are not terminated.
+- Service stdout and stderr are written to separate log files so startup failures can be diagnosed.

@@ -1,25 +1,45 @@
-name: Build Project Stratagem for Windows
+name: Build Project Stratagem (Rust / Windows)
+
 on:
   workflow_dispatch:
+  pull_request:
+    branches: [main]
   push:
-    tags:
-      - "v*"
+    branches: [main]
+    tags: ["v*"]
+
 permissions:
   contents: read
+
 jobs:
-  build:
+  windows-build:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - name: Install PyInstaller
-        run: python -m pip install --upgrade pip pyinstaller
-      - name: Build GUI executable
-        run: pyinstaller --noconfirm --clean --onefile --windowed --name Project-Stratagem app.py
-      - uses: actions/upload-artifact@v4
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Check Rust project
+        run: cargo check --release
+
+      - name: Run tests
+        run: cargo test --release
+
+      - name: Build Windows executable
+        run: cargo build --release
+
+      - name: Stage portable executable
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Copy-Item target/release/Project-Stratagem.exe dist/Project-Stratagem.exe
+          Copy-Item README.md dist/README.txt
+
+      - name: Upload Windows app
+        uses: actions/upload-artifact@v4
         with:
           name: Project-Stratagem-Windows
-          path: dist/Project-Stratagem.exe
+          path: dist/*
           retention-days: 30

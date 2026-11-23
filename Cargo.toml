@@ -1,0 +1,28 @@
+[package]
+name = "project-stratagem"
+version = "0.2.0"
+edition = "2024"
+description = "Native Windows control panel for the Project Stratagem Ollama gateway stack"
+license = "MIT"
+
+[[bin]]
+name = "Project-Stratagem"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.37.0", default-features = false, features = ["default_fonts", "glow"] }
+dirs = "6.0"
+rfd = { version = "0.18.0", default-features = false, features = ["common-controls-v6"] }
+reqwest = { version = "0.13.5", features = ["blocking", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1.18", features = ["v4"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true
