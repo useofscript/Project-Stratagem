@@ -589,7 +589,7 @@ impl StratagemApp {
             if let Some(start) = line.find("https://") {
                 let tail = &line[start..];
                 let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
-                let candidate = tail[..end].trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ')' | '"' | '\\''));
+                let candidate = tail[..end].trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ')'));
                 if candidate.contains(".trycloudflare.com") {
                     return Some(candidate.to_owned());
                 }
