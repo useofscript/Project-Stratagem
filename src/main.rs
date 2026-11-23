@@ -942,7 +942,7 @@ impl eframe::App for StratagemApp {
         ui.ctx().request_repaint_after(Duration::from_millis(800));
         let full_width = ui.available_width();
         let sidebar_width = 204.0;
-        let main_width = (full_width - sidebar_width - 18.0).max(360.0);
+        let main_width = (full_width - sidebar_width - 18.0 - 72.0).max(360.0);
 
         ui.horizontal(|ui| {
             egui::Frame::default()
