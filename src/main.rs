@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, VecDeque},
     env,
-    fs::{self, File, OpenOptions},
+    fs::{self, OpenOptions},
     io::Write,
     net::{TcpStream, ToSocketAddrs},
     path::{Path, PathBuf},
@@ -143,7 +143,7 @@ fn push_log(logs: &Arc<Mutex<VecDeque<String>>>, log_path: &Path, message: impl 
 }
 
 fn chrono_like_time() -> String {
-    // Keep the logger dependency-free; timestamps are local wall-clock seconds.
+    // Keep the logger dependency-free; timestamps are UTC.
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -151,7 +151,7 @@ fn chrono_like_time() -> String {
     let seconds = now % 60;
     let minutes = (now / 60) % 60;
     let hours = (now / 3600) % 24;
-    format!("{hours:02}:{minutes:02}:{seconds:02}")
+    format!("{hours:02}:{minutes:02}:{seconds:02} UTC")
 }
 
 fn port_is_open(port: u16) -> bool {
@@ -234,10 +234,10 @@ fn unprotect_token(encrypted: &[u8]) -> Result<String, String> {
         )
         .map_err(|error| format!("Windows DPAPI decryption failed: {error}"))?;
         let bytes = slice::from_raw_parts(output.pbData, output.cbData as usize);
-        let token = String::from_utf8(bytes.to_vec())
-            .map_err(|error| format!("Stored token is not valid UTF-8: {error}"))?;
+        let token_result = String::from_utf8(bytes.to_vec())
+            .map_err(|error| format!("Stored token is not valid UTF-8: {error}"));
         let _ = LocalFree(Some(HLOCAL(output.pbData as *mut c_void)));
-        Ok(token)
+        token_result
     }
 }
 
@@ -428,10 +428,11 @@ impl StratagemApp {
             self.settings.node_path.trim().to_owned()
         };
         let env_name = if self.settings.token_env.trim().is_empty() {
-            "BRIDGE_TOKEN"
+            "BRIDGE_TOKEN".to_owned()
         } else {
-            self.settings.token_env.trim()
+            self.settings.token_env.trim().to_owned()
         };
+        let token = self.token.trim().to_owned();
         if !script.is_file() {
             self.log(format!("bridge.mjs was not found at {}. Set its path in Settings.", script.display()));
             return;
@@ -440,7 +441,7 @@ impl StratagemApp {
             self.log("Node.js was not found. Install it or select node.exe in Settings.");
             return;
         }
-        if self.token.trim().is_empty() {
+        if token.is_empty() {
             self.log("Bridge token is empty. Enter or generate one in Settings, save it, then start the bridge.");
             return;
         }
@@ -449,7 +450,7 @@ impl StratagemApp {
             &node,
             &[script.to_string_lossy().into_owned()],
             script.parent(),
-            Some((env_name, self.token.trim())),
+            Some((&env_name, &token)),
         );
     }
 
@@ -829,7 +830,6 @@ impl eframe::App for StratagemApp {
 
             ui.add_space(14.0);
             egui::ScrollArea::vertical().show(ui, |ui| {
-                ui.set_min_width(ui.available_width());
                 match self.page {
                     Page::Dashboard => self.dashboard(ui),
                     Page::Settings => self.settings_page(ui),
