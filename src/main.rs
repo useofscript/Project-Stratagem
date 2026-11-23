@@ -971,11 +971,11 @@ impl eframe::App for StratagemApp {
                                 .fill(if selected { Color32::from_rgb(43, 36, 26) } else { Color32::TRANSPARENT })
                                 .inner_margin(egui::Margin::symmetric(5, 3))
                                 .show(ui, |ui| {
-                                    let response = ui.add_sized(
+                                    if ui.add_sized(
                                         [sidebar_width - 34.0, 36.0],
-                                        egui::SelectableLabel::new(selected, RichText::new(label).size(14.0).strong()),
-                                    );
-                                    if response.clicked() {
+                                        egui::Button::new(RichText::new(label).size(14.0).strong())
+                                            .fill(if selected { Color32::from_rgb(43, 36, 26) } else { CARD }),
+                                    ).clicked() {
                                         self.page = page;
                                     }
                                 });
