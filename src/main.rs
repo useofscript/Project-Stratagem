@@ -73,6 +73,7 @@ struct ManagedProcess {
 struct StratagemApp {
     settings: Settings,
     token: String,
+    worker_api_key: String,
     show_token: bool,
     page: Page,
     processes: HashMap<String, ManagedProcess>,
@@ -303,6 +304,7 @@ impl StratagemApp {
                 .ok()
                 .and_then(|bytes| unprotect_token(&bytes).ok())
                 .unwrap_or_default(),
+            worker_api_key: "clank".to_owned(),
             show_token: false,
             page: Page::Dashboard,
             processes: HashMap::new(),
@@ -654,6 +656,49 @@ foreach ($ownerPid in $owners) {
         });
     }
 
+    fn test_worker_api_key(&mut self) {
+        let base = self.settings.worker_url.trim().trim_end_matches('/').to_owned();
+        let api_key = self.worker_api_key.trim().to_owned();
+        let logs = Arc::clone(&self.logs);
+        let log_path = self.log_path.clone();
+        if api_key.is_empty() {
+            self.log("Worker API key test skipped: enter the Clank World API key first.");
+            return;
+        }
+        self.log(format!("Testing Cloudflare Worker client authentication at {base}/v1/models ..."));
+        thread::spawn(move || {
+            let client = match reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build() {
+                Ok(client) => client,
+                Err(error) => {
+                    push_log(&logs, &log_path, format!("Could not create Worker test client: {error}"));
+                    return;
+                }
+            };
+            match client.get(format!("{base}/v1/models")).bearer_auth(api_key).send() {
+                Ok(response) if response.status().is_success() => {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_default();
+                    let models = serde_json::from_str::<serde_json::Value>(&body).ok()
+                        .and_then(|json| json.get("data").or_else(|| json.get("models"))).and_then(|list| list.as_array()).map(|list| list.len());
+                    push_log(&logs, &log_path, format!("Worker API key accepted (HTTP {status}). Gateway endpoint and client authentication are working.{}", models.map(|count| format!(" Returned {count} model entries.")).unwrap_or_default()));
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
+                    push_log(&logs, &log_path, format!("Worker rejected the Clank World API key (HTTP {}). This is the Cloudflare Worker API_KEY/client credential, separate from the bridge token. Verify the API_KEY secret and the key entered in Clank World.", response.status()));
+                }
+                Ok(response) if response.status() == reqwest::StatusCode::BAD_GATEWAY => {
+                    let body = response.text().unwrap_or_default().chars().take(300).collect::<String>();
+                    push_log(&logs, &log_path, format!("Worker accepted the request but could not reach the local bridge (HTTP 502). This is an upstream/tunnel/bridge issue, not a client API-key rejection. Response: {body}"));
+                }
+                Ok(response) => {
+                    let status = response.status();
+                    let body = response.text().unwrap_or_default().chars().take(300).collect::<String>();
+                    push_log(&logs, &log_path, format!("Worker test returned HTTP {status}; not classified as an API-key failure. Response: {body}"));
+                }
+                Err(error) => push_log(&logs, &log_path, format!("Could not reach the Cloudflare Worker endpoint: {error}. Check Worker URL and internet connection.")),
+            }
+        });
+    }
+
     fn test_bridge_auth(&mut self) {
         let token = self.token.trim().to_owned();
         let logs = Arc::clone(&self.logs);
@@ -975,6 +1020,12 @@ foreach ($ownerPid in $owners) {
                     self.saved_message = "Cloudflare Worker Base URL copied".to_owned();
                 }
                 ui.label(RichText::new("Clank World API Key = Cloudflare Worker API_KEY (currently configured as clank).").size(11.0).color(AMBER));
+                ui.label("Worker API key test (same key you enter in Clank World)");
+                ui.horizontal(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut self.worker_api_key).password(true).desired_width(f32::INFINITY));
+                    if ui.button("Test Worker Key").clicked() { self.test_worker_api_key(); }
+                });
+                ui.label(RichText::new("This tests the Cloudflare Worker client credential independently from local bridge-token authentication. The test key is not saved to settings or logs.").size(11.0).color(MUTED));
                 ui.label(RichText::new("Bridge Token = Cloudflare Worker BRIDGE_TOKEN. This is sent by the Worker to the local bridge in the X-Bridge-Token header.").size(11.0).color(MUTED));
                 if let Some(tunnel) = self.current_tunnel_url() {
                     ui.separator();
