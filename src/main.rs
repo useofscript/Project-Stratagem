@@ -754,7 +754,7 @@ impl StratagemApp {
             .inner_margin(egui::Margin::same(13))
             .show(ui, |ui| {
                 ui.label(RichText::new("QUICK TUNNEL").strong().color(AMBER));
-                ui.label("Cloudflare Quick Tunnel addresses are temporary. If the tunnel restarts, copy the newly generated URL again.");
+                ui.label("Cloudflare Quick Tunnel addresses are temporary. If it restarts, update the Worker BRIDGE_URL binding with the new tunnel URL. Clank World itself should keep using the stable workers.dev URL.");
             });
     }
 
@@ -1009,7 +1009,7 @@ impl eframe::App for StratagemApp {
                         }
                         ui.add_space(20.0);
                         ui.separator();
-                        ui.label(RichText::new("0.3.0 · STRATEGIST EDITION").size(9.0).color(MUTED));
+                        ui.label(RichText::new("0.3.1 · STRATEGIST EDITION").size(9.0).color(MUTED));
                         ui.label(RichText::new("Local-first. Your hardware.").size(10.0).color(MUTED));
                     });
                 });
