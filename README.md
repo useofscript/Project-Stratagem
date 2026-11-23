@@ -12,7 +12,7 @@ Project Stratagem is a native Windows desktop control panel for the local Ollama
 - Token protection: encrypt the bridge token with Windows DPAPI for the current Windows account
 - Activity: view application events and open the individual service logs
 
-The app includes a redesigned command center, sidebar navigation, service-health indicators, quick actions, a Clank World connection panel, Settings, and Activity. A chess king icon is used for the app window and Windows executable. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
+The app includes a redesigned command center, sidebar navigation, service-health indicators, quick actions, a Cloudflare Worker connection panel, Settings, and Activity. A chess king icon is used for the app window and Windows executable. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
 
 ## Requirements
 
@@ -42,9 +42,11 @@ Open the repository's Releases page to download the latest Windows executable or
 1. Open **Settings** and verify the path to your existing `bridge.mjs`.
 2. Verify the Node.js and `cloudflared.exe` paths. Stratagem searches the current `PATH` automatically, but you can browse to each executable.
 3. Set the token environment-variable name to what your bridge actually reads. It defaults to `BRIDGE_TOKEN`.
-4. Enter the token configured in the bridge. The app's Show and Copy controls let you retrieve the exact token for a direct Clank World setup.
+4. Set the local bridge token to match the Cloudflare Worker `BRIDGE_TOKEN` secret. The app's Show and Copy controls let you retrieve it.
 5. Select **Save encrypted token**, then **Save Settings**.
 6. Return to **Dashboard** and select **Start All**.
+7. In **Settings**, set the Cloudflare Worker URL (default: `https://ollama-gateway.pizzadoe173.workers.dev`).
+8. In Clank World, use the Worker URL with `/v1` appended as the Base URL. The API Key must be the Worker `API_KEY` secret, not the local bridge URL or bridge token. The Worker forwards requests using its own `BRIDGE_TOKEN` secret.
 
 The default Ollama URL is `http://127.0.0.1:11434`; the default bridge/tunnel target is `http://127.0.0.1:11435`.
 
