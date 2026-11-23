@@ -956,16 +956,18 @@ impl eframe::App for StratagemApp {
                             (Page::Activity, "≡  Activity logs"),
                         ] {
                             let selected = self.page == page;
-                            let response = ui.add_sized(
-                                [sidebar_width - 24.0, 40.0],
-                                egui::SelectableLabel::new(selected, RichText::new(label).size(14.0).strong()),
-                            );
-                            if selected {
-                                ui.painter().rect_filled(response.rect, 3.0, Color32::from_rgb(46, 39, 29));
-                            }
-                            if response.clicked() {
-                                self.page = page;
-                            }
+                            egui::Frame::default()
+                                .fill(if selected { Color32::from_rgb(43, 36, 26) } else { Color32::TRANSPARENT })
+                                .inner_margin(egui::Margin::symmetric(5, 3))
+                                .show(ui, |ui| {
+                                    let response = ui.add_sized(
+                                        [sidebar_width - 34.0, 36.0],
+                                        egui::SelectableLabel::new(selected, RichText::new(label).size(14.0).strong()),
+                                    );
+                                    if response.clicked() {
+                                        self.page = page;
+                                    }
+                                });
                         }
                         ui.add_space(22.0);
                         ui.label(RichText::new("SERVICES").size(10.0).strong().color(MUTED));
@@ -1038,11 +1040,19 @@ impl eframe::App for StratagemApp {
     }
 }
 
+fn app_icon() -> egui::IconData {
+    let rgba = image::load_from_memory(include_bytes!("../assets/stratagem-icon.png"))
+        .expect("embedded Stratagem icon must be valid PNG")
+        .to_rgba8();
+    egui::IconData::from_rgba(rgba.as_raw().to_vec(), rgba.width(), rgba.height())
+}
+
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1120.0, 780.0])
-            .with_min_inner_size([940.0, 680.0]),
+            .with_inner_size([1240.0, 860.0])
+            .with_min_inner_size([980.0, 700.0])
+            .with_icon(Some(app_icon())),
         renderer: eframe::Renderer::Glow,
         ..Default::default()
     };
