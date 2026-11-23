@@ -929,49 +929,110 @@ impl eframe::App for StratagemApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.update_status();
         ui.ctx().request_repaint_after(Duration::from_millis(800));
+        let full_width = ui.available_width();
+        let sidebar_width = 204.0;
+        let main_width = (full_width - sidebar_width - 18.0).max(360.0);
 
-        ui.vertical(|ui| {
+        ui.horizontal(|ui| {
             egui::Frame::default()
-                .fill(PANEL)
-                .stroke(Stroke::new(1.0, BORDER))
-                .inner_margin(egui::Margin::symmetric(18, 13))
+                .fill(Color32::from_rgb(13, 15, 19))
+                .inner_margin(egui::Margin::symmetric(14, 16))
                 .show(ui, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(RichText::new("PROJECT STRATAGEM").size(19.0).strong().color(TEXT));
-                            ui.label(RichText::new("LOCAL AI GATEWAY CONTROL").size(10.0).strong().color(MUTED));
+                    ui.set_width(sidebar_width);
+                    ui.vertical(|ui| {
+                        ui.horizontal(|ui| {
+                            ui.image((self.icon_texture.id(), Vec2::splat(48.0)));
+                            ui.vertical(|ui| {
+                                ui.label(RichText::new("STRATAGEM").size(18.0).strong().color(TEXT));
+                                ui.label(RichText::new("LOCAL AI CONTROL").size(9.0).strong().color(ACCENT));
+                            });
                         });
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.selectable_label(self.page == Page::Activity, "Activity").clicked() {
-                                self.page = Page::Activity;
+                        ui.add_space(24.0);
+                        ui.label(RichText::new("WORKSPACE").size(10.0).strong().color(MUTED));
+                        ui.add_space(6.0);
+                        for (page, label) in [
+                            (Page::Dashboard, "◈  Overview"),
+                            (Page::Settings, "⚙  Settings"),
+                            (Page::Activity, "≡  Activity logs"),
+                        ] {
+                            let selected = self.page == page;
+                            let response = ui.add_sized(
+                                [sidebar_width - 24.0, 40.0],
+                                egui::SelectableLabel::new(selected, RichText::new(label).size(14.0).strong()),
+                            );
+                            if selected {
+                                ui.painter().rect_filled(response.rect, 3.0, Color32::from_rgb(46, 39, 29));
                             }
-                            if ui.selectable_label(self.page == Page::Settings, "Settings").clicked() {
-                                self.page = Page::Settings;
+                            if response.clicked() {
+                                self.page = page;
                             }
-                            if ui.selectable_label(self.page == Page::Dashboard, "Dashboard").clicked() {
-                                self.page = Page::Dashboard;
-                            }
-                        });
+                        }
+                        ui.add_space(22.0);
+                        ui.label(RichText::new("SERVICES").size(10.0).strong().color(MUTED));
+                        ui.add_space(8.0);
+                        for (label, online) in [
+                            ("Ollama", self.ollama_online),
+                            ("Bridge", self.bridge_online),
+                            ("Tunnel", self.tunnel_running),
+                        ] {
+                            let dot = if online { GREEN } else { RED };
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("●").color(dot));
+                                ui.label(RichText::new(label).color(TEXT).size(12.0));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    ui.label(RichText::new(if online { "READY" } else { "OFF" }).size(9.0).color(if online { GREEN } else { MUTED }));
+                                });
+                            });
+                        }
+                        ui.add_space(20.0);
+                        ui.separator();
+                        ui.label(RichText::new("0.3.0 · STRATEGIST EDITION").size(9.0).color(MUTED));
+                        ui.label(RichText::new("Local-first. Your hardware.").size(10.0).color(MUTED));
                     });
                 });
 
-            ui.add_space(14.0);
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                match self.page {
-                    Page::Dashboard => self.dashboard(ui),
-                    Page::Settings => self.settings_page(ui),
-                    Page::Activity => self.activity_page(ui),
-                }
-                ui.add_space(18.0);
-                ui.separator();
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Project Stratagem · Native Rust build").size(10.0).color(MUTED));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.button("Open data folder").clicked() {
-                            Self::open_path(&data_dir());
-                        }
+            ui.separator();
+            ui.vertical(|ui| {
+                ui.set_width(main_width);
+                egui::Frame::default()
+                    .fill(PANEL)
+                    .inner_margin(egui::Margin::symmetric(22, 16))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.vertical(|ui| {
+                                let (title, subtitle) = match self.page {
+                                    Page::Dashboard => ("Command center", "System overview and connection controls"),
+                                    Page::Settings => ("Settings", "Configure local services and authentication"),
+                                    Page::Activity => ("Activity", "Service output and diagnostic history"),
+                                };
+                                ui.label(RichText::new(title).size(23.0).strong().color(TEXT));
+                                ui.label(RichText::new(subtitle).size(11.0).color(MUTED));
+                            });
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if ui.button("Open data folder").clicked() {
+                                    Self::open_path(&data_dir());
+                                }
+                            });
+                        });
+                        ui.add_space(15.0);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            match self.page {
+                                Page::Dashboard => self.dashboard(ui),
+                                Page::Settings => self.settings_page(ui),
+                                Page::Activity => self.activity_page(ui),
+                            }
+                            ui.add_space(18.0);
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new("PROJECT STRATAGEM · WINDOWS DESKTOP").size(10.0).color(MUTED));
+                                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                    if ui.button("Open log folder").clicked() {
+                                        Self::open_path(&self.logs_dir);
+                                    }
+                                });
+                            });
+                        });
                     });
-                });
             });
         });
     }
