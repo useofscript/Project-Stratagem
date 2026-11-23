@@ -249,7 +249,7 @@ fn unprotect_token(_encrypted: &[u8]) -> Result<String, String> {
 impl StratagemApp {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         cc.egui_ctx.set_visuals(egui::Visuals::dark());
-        cc.egui_ctx.style_mut(|style| {
+        cc.egui_ctx.style_mut_of(egui::Theme::Dark, |style| {
             style.visuals.panel_fill = BG;
             style.visuals.window_fill = PANEL;
             style.visuals.override_text_color = Some(TEXT);
@@ -468,7 +468,7 @@ impl StratagemApp {
             self.log("cloudflared.exe was not found. Install cloudflared or select it in Settings.");
             return;
         }
-        let target = self.settings.tunnel_target.trim();
+        let target = self.settings.tunnel_target.trim().to_owned();
         if target.is_empty() {
             self.log("Tunnel target URL is blank. Set it in Settings.");
             return;
@@ -476,7 +476,7 @@ impl StratagemApp {
         self.launch(
             "tunnel",
             &executable,
-            &["tunnel".to_owned(), "--url".to_owned(), target.to_owned()],
+            &["tunnel".to_owned(), "--url".to_owned(), target.clone()],
             None,
             None,
         );
