@@ -41,6 +41,8 @@ struct Settings {
     tunnel_target: String,
     #[serde(alias = "ollama")]
     ollama_url: String,
+    #[serde(default = "default_worker_url")]
+    worker_url: String,
 }
 
 impl Default for Settings {
@@ -52,6 +54,7 @@ impl Default for Settings {
             token_env: "BRIDGE_TOKEN".to_owned(),
             tunnel_target: "http://127.0.0.1:11435".to_owned(),
             ollama_url: "http://127.0.0.1:11434".to_owned(),
+            worker_url: default_worker_url(),
         }
     }
 }
@@ -91,6 +94,10 @@ fn data_dir() -> PathBuf {
         .or_else(dirs::home_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("ProjectStratagem")
+}
+
+fn default_worker_url() -> String {
+    "https://ollama-gateway.pizzadoe173.workers.dev".to_owned()
 }
 
 fn default_bridge_path() -> String {
@@ -566,7 +573,7 @@ impl StratagemApp {
         let token = self.token.trim().to_owned();
         let logs = Arc::clone(&self.logs);
         let log_path = self.log_path.clone();
-        self.log("Testing bridge authentication at http://127.0.0.1:11435/v1/models ...");
+        self.log("Testing bridge authentication with X-Bridge-Token at http://127.0.0.1:11435/v1/models ...");
         thread::spawn(move || {
             let result = reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(8))
@@ -575,7 +582,7 @@ impl StratagemApp {
                 .and_then(|client| {
                     client
                         .get("http://127.0.0.1:11435/v1/models")
-                        .bearer_auth(&token)
+                        .header("X-Bridge-Token", &token)
                         .send()
                         .map_err(|error| error.to_string())
                 });
@@ -584,7 +591,7 @@ impl StratagemApp {
                     push_log(&logs, &log_path, format!("Bridge auth accepted. /v1/models returned HTTP {}.", response.status()));
                 }
                 Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
-                    push_log(&logs, &log_path, format!("Bridge rejected the saved token (HTTP {}). Clank World will reject the same token until bridge auth is corrected.", response.status()));
+                    push_log(&logs, &log_path, format!("Bridge rejected X-Bridge-Token (HTTP {}). Check that Stratagem's Bridge Token matches the Cloudflare Worker's BRIDGE_TOKEN secret, and restart the bridge after changing it.", response.status()));
                 }
                 Ok(response) => {
                     let status = response.status();
@@ -725,24 +732,18 @@ impl StratagemApp {
                 .stroke(Stroke::new(1.0, BORDER))
                 .inner_margin(egui::Margin::same(16))
                 .show(&mut columns[1], |ui| {
-                    ui.heading("Clank World connection");
-                    ui.label(RichText::new("Direct connection · No separate Worker key").color(MUTED).size(12.0));
+                    ui.heading("Clank World · Cloudflare Gateway");
+                    ui.label(RichText::new("Stable Worker endpoint · OpenAI-compatible API").color(MUTED).size(12.0));
                     ui.add_space(7.0);
-                    let url = self.current_tunnel_url().map(|u| format!("{u}/v1"));
+                    let base_url = format!("{}/v1", self.settings.worker_url.trim().trim_end_matches('/'));
                     ui.label("Base URL");
-                    ui.label(RichText::new(url.as_deref().unwrap_or("Tunnel URL not detected yet")).monospace().color(TEXT));
-                    if let Some(url) = url.as_ref() {
-                        if ui.button("Copy Base URL").clicked() {
-                            ui.ctx().copy_text(url.clone());
-                            self.saved_message = "Base URL copied".to_owned();
-                        }
-                    }
-                    if ui.button("Copy API Key (Bridge Token)").clicked() && !self.token.trim().is_empty() {
-                        ui.ctx().copy_text(self.token.trim().to_owned());
-                        self.saved_message = "Bridge token copied".to_owned();
+                    ui.label(RichText::new(&base_url).monospace().color(TEXT));
+                    if ui.button("Copy Clank World Base URL").clicked() {
+                        ui.ctx().copy_text(base_url);
+                        self.saved_message = "Cloudflare Worker Base URL copied".to_owned();
                     }
                     ui.add_space(4.0);
-                    ui.label(RichText::new("Clank World API Key = your saved Bridge Token. Use the exact Ollama model tag.").color(AMBER).size(11.0));
+                    ui.label(RichText::new("Clank World API Key = the Cloudflare Worker API_KEY secret. The Worker forwards requests to the local bridge using BRIDGE_TOKEN.").color(AMBER).size(11.0));
                 });
         });
 
@@ -817,6 +818,10 @@ impl StratagemApp {
                 ui.label("Tunnel local target");
                 ui.text_edit_singleline(&mut self.settings.tunnel_target);
                 ui.add_space(6.0);
+                ui.label("Cloudflare Worker URL (used by Clank World)");
+                ui.text_edit_singleline(&mut self.settings.worker_url);
+                ui.label(RichText::new("Clank World Base URL is this address plus /v1. Do not use the temporary trycloudflare.com URL as Clank World's Base URL.").size(11.0).color(MUTED));
+                ui.add_space(6.0);
                 ui.label("Bridge token environment variable");
                 ui.text_edit_singleline(&mut self.settings.token_env);
                 ui.label(RichText::new("Must match the variable name read by bridge.mjs. Usually BRIDGE_TOKEN.").size(11.0).color(MUTED));
@@ -836,7 +841,7 @@ impl StratagemApp {
                         self.saved_message = "Bridge token copied to clipboard".to_owned();
                     }
                 });
-                ui.label(RichText::new("For a direct Clank World connection, the API key must be this exact bridge token. Do not use a separate Worker API_KEY here.").size(11.0).color(AMBER));
+                ui.label(RichText::new("This token is for the local bridge only. It must match the Cloudflare Worker's BRIDGE_TOKEN secret; it is not the Clank World client API key.").size(11.0).color(AMBER));
                 ui.horizontal(|ui| {
                     if ui.button("Generate token").clicked() {
                         self.generate_token();
@@ -853,28 +858,29 @@ impl StratagemApp {
             .stroke(Stroke::new(1.0, BORDER))
             .inner_margin(egui::Margin::same(14))
             .show(ui, |ui| {
-                ui.heading("Clank World · Direct Quick Tunnel");
-                ui.label(RichText::new("Use these values when connecting directly to Stratagem's Cloudflare Quick Tunnel.").color(MUTED));
-                let tunnel_url = self.current_tunnel_url();
-                let base_url = tunnel_url.map(|url| format!("{url}/v1"));
+                ui.heading("Clank World · Cloudflare Gateway");
+                ui.label(RichText::new("Use the stable Worker URL in Clank World, not the temporary Quick Tunnel address.").color(MUTED));
+                let base_url = format!("{}/v1", self.settings.worker_url.trim().trim_end_matches('/'));
                 ui.label("Base URL");
-                ui.label(RichText::new(base_url.as_deref().unwrap_or("Tunnel URL not found. Start the tunnel, then check Activity > tunnel.log.")).monospace());
-                if let Some(url) = base_url.as_ref() {
-                    if ui.button("Copy Clank World Base URL").clicked() {
-                        ui.ctx().copy_text(url.clone());
-                        self.saved_message = "Clank World Base URL copied".to_owned();
+                ui.label(RichText::new(&base_url).monospace());
+                if ui.button("Copy Clank World Base URL").clicked() {
+                    ui.ctx().copy_text(base_url);
+                    self.saved_message = "Cloudflare Worker Base URL copied".to_owned();
+                }
+                ui.label(RichText::new("Clank World API Key = Cloudflare Worker API_KEY (currently configured as clank).").size(11.0).color(AMBER));
+                ui.label(RichText::new("Bridge Token = Cloudflare Worker BRIDGE_TOKEN. This is sent by the Worker to the local bridge in the X-Bridge-Token header.").size(11.0).color(MUTED));
+                if let Some(tunnel) = self.current_tunnel_url() {
+                    ui.separator();
+                    ui.label("Current Quick Tunnel (Worker BRIDGE_URL)");
+                    ui.label(RichText::new(&tunnel).monospace().size(11.0));
+                    if ui.button("Copy current tunnel URL").clicked() {
+                        ui.ctx().copy_text(tunnel);
+                        self.saved_message = "Current Quick Tunnel URL copied".to_owned();
                     }
                 }
-                if ui.button("Copy API key (bridge token)").clicked() && !self.token.trim().is_empty() {
-                    ui.ctx().copy_text(self.token.trim().to_owned());
-                    self.saved_message = "Bridge token copied. Paste it as Clank World API Key.".to_owned();
+                if ui.button("Test local bridge authentication").clicked() {
+                    self.test_bridge_auth();
                 }
-                ui.label(RichText::new("Clank World API Key = Bridge token. Model name must be an exact Ollama model tag.").size(11.0).color(AMBER));
-                ui.horizontal(|ui| {
-                    if ui.button("Test bridge token locally").clicked() {
-                        self.test_bridge_auth();
-                    }
-                });
             });
         ui.add_space(12.0);
         ui.horizontal(|ui| {
