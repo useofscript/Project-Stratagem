@@ -660,7 +660,6 @@ impl StratagemApp {
     }
 
     fn dashboard(&mut self, ui: &mut egui::Ui) {
-        ui.heading(RichText::new("Command center").size(28.0).strong());
         ui.label(RichText::new("The local AI stack, at a glance.").color(MUTED));
         ui.add_space(14.0);
 
@@ -944,13 +943,18 @@ impl eframe::App for StratagemApp {
         let sidebar_width = 204.0;
         let main_width = (full_width - sidebar_width - 18.0 - 72.0).max(360.0);
 
+        let full_height = ui.available_height();
+        ui.painter().rect_filled(ui.max_rect(), 0.0, Color32::from_rgb(7, 9, 12));
         ui.horizontal(|ui| {
+            ui.set_min_height(full_height);
             egui::Frame::default()
                 .fill(Color32::from_rgb(13, 15, 19))
                 .inner_margin(egui::Margin::symmetric(14, 16))
                 .show(ui, |ui| {
+                    ui.set_min_height(full_height - 32.0);
                     ui.set_width(sidebar_width);
                     ui.vertical(|ui| {
+                        ui.set_min_height(full_height - 32.0);
                         ui.horizontal(|ui| {
                             ui.image((self.icon_texture.id(), Vec2::splat(48.0)));
                             ui.vertical(|ui| {
@@ -1006,11 +1010,13 @@ impl eframe::App for StratagemApp {
 
             ui.separator();
             ui.vertical(|ui| {
+                ui.set_min_height(full_height);
                 ui.set_width(main_width);
                 egui::Frame::default()
                     .fill(PANEL)
                     .inner_margin(egui::Margin::symmetric(22, 16))
                     .show(ui, |ui| {
+                        ui.set_min_height(full_height - 32.0);
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 let (title, subtitle) = match self.page {
@@ -1028,7 +1034,7 @@ impl eframe::App for StratagemApp {
                             });
                         });
                         ui.add_space(15.0);
-                        egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                             match self.page {
                                 Page::Dashboard => self.dashboard(ui),
                                 Page::Settings => self.settings_page(ui),
