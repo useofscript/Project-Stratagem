@@ -820,6 +820,7 @@ impl StratagemApp {
                 ui.add_space(6.0);
                 ui.label("Bridge token environment variable");
                 ui.text_edit_singleline(&mut self.settings.token_env);
+                ui.label(RichText::new("Must match the variable name read by bridge.mjs. Usually BRIDGE_TOKEN.").size(11.0).color(MUTED));
                 ui.add_space(6.0);
                 ui.label("Bridge token");
                 ui.horizontal(|ui| {
@@ -901,11 +902,14 @@ impl StratagemApp {
         ui.label(RichText::new("Application events are shown here. Process output is saved to individual log files.").color(MUTED));
         ui.add_space(10.0);
 
+        let mut copy_activity = false;
         egui::Frame::group(ui.style())
             .fill(Color32::from_rgb(8, 12, 18))
             .stroke(Stroke::new(1.0, BORDER))
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
+                ui.set_min_height(230.0);
+                ui.set_max_height(400.0);
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
                     if let Ok(entries) = self.logs.lock() {
                         for entry in entries.iter() {
@@ -916,12 +920,19 @@ impl StratagemApp {
             });
         ui.add_space(10.0);
         ui.horizontal_wrapped(|ui| {
+            copy_activity = ui.button("Copy activity log").clicked();
             for name in ["ollama.log", "bridge.log", "tunnel.log", "stratagem.log"] {
                 if ui.button(format!("Open {name}")).clicked() {
                     Self::open_path(&self.logs_dir.join(name));
                 }
             }
         });
+        if copy_activity {
+            if let Ok(entries) = self.logs.lock() {
+                ui.ctx().copy_text(entries.iter().cloned().collect::<Vec<_>>().join("\\n"));
+                self.saved_message = "Activity log copied to clipboard".to_owned();
+            }
+        }
     }
 }
 
