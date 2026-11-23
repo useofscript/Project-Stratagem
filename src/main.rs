@@ -475,6 +475,91 @@ impl StratagemApp {
         );
     }
 
+    fn restart_bridge(&mut self) {
+        self.save_settings();
+        self.save_token();
+
+        let script = PathBuf::from(self.settings.bridge_path.trim());
+        if !script.is_file() {
+            self.log(format!("Cannot restart bridge: bridge.mjs was not found at {}.", script.display()));
+            return;
+        }
+
+        if let Some(mut process) = self.processes.remove("bridge") {
+            match process.child.try_wait() {
+                Ok(Some(_)) => self.log("The bridge process launched by Stratagem has already exited."),
+                Ok(None) => match process.child.kill() {
+                    Ok(()) => {
+                        let _ = process.child.wait();
+                        self.log("Stopped the bridge process launched by Stratagem.");
+                    }
+                    Err(error) => self.log(format!("Could not stop the bridge process launched by Stratagem: {error}")),
+                },
+                Err(error) => self.log(format!("Could not inspect the bridge process launched by Stratagem: {error}")),
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            let bridge_path = script.to_string_lossy().replace('\'', "''");
+            let command = r#"
+$bridgePath = '__BRIDGE_PATH__'
+$owners = @(Get-NetTCPConnection -LocalPort 11435 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+foreach ($ownerPid in $owners) {
+    $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
+    if ($owner -and $owner.Name -ieq 'node.exe' -and $owner.CommandLine -and $owner.CommandLine.IndexOf($bridgePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        Stop-Process -Id $ownerPid -Force -ErrorAction Stop
+        Write-Output "STOPPED:$ownerPid"
+    } elseif ($owner) {
+        Write-Output "SKIPPED:$ownerPid:$($owner.Name)"
+    }
+}
+"#.replace("__BRIDGE_PATH__", &bridge_path);
+
+            self.log("Restarting the configured bridge. Only a Node.js process running this exact bridge.mjs path can be stopped.");
+            match Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
+                .arg(&command)
+                .output()
+            {
+                Ok(output) => {
+                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                    if !stdout.is_empty() {
+                        self.log(stdout);
+                    }
+                    if !output.status.success() {
+                        self.log(format!("PowerShell could not restart the bridge listener: {stderr}"));
+                    }
+                }
+                Err(error) => {
+                    self.log(format!("Could not run the safe bridge-restart check: {error}"));
+                    return;
+                }
+            }
+        }
+
+        #[cfg(not(windows))]
+        {
+            self.log("Automatic restart of an external bridge process is supported on Windows only.");
+        }
+
+        for _ in 0..30 {
+            if !port_is_open(11435) {
+                break;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        if port_is_open(11435) {
+            self.log("Port 11435 is still occupied. Stratagem did not terminate it because its process could not be confirmed as the configured bridge.mjs. Check Settings > bridge.mjs path and the Activity log.");
+            return;
+        }
+
+        self.log("Port 11435 is free. Starting bridge with the saved token and environment-variable name.");
+        self.start_bridge();
+    }
+
     fn start_tunnel(&mut self) {
         if self.process_running("tunnel") {
             self.log("Cloudflare Quick Tunnel is already running under Stratagem.");
@@ -573,33 +658,54 @@ impl StratagemApp {
         let token = self.token.trim().to_owned();
         let logs = Arc::clone(&self.logs);
         let log_path = self.log_path.clone();
-        self.log("Testing bridge authentication with X-Bridge-Token at http://127.0.0.1:11435/v1/models ...");
+        self.log("Testing both supported bridge authentication headers at http://127.0.0.1:11435/v1/models ...");
         thread::spawn(move || {
-            let result = reqwest::blocking::Client::builder()
+            let client = match reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(8))
                 .build()
-                .map_err(|error| error.to_string())
-                .and_then(|client| {
-                    client
-                        .get("http://127.0.0.1:11435/v1/models")
-                        .header("X-Bridge-Token", &token)
-                        .send()
-                        .map_err(|error| error.to_string())
-                });
-            match result {
-                Ok(response) if response.status().is_success() => {
-                    push_log(&logs, &log_path, format!("Bridge auth accepted. /v1/models returned HTTP {}.", response.status()));
+            {
+                Ok(client) => client,
+                Err(error) => {
+                    push_log(&logs, &log_path, format!("Could not create bridge test client: {error}"));
+                    return;
                 }
-                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
-                    push_log(&logs, &log_path, format!("Bridge rejected X-Bridge-Token (HTTP {}). Check that Stratagem's Bridge Token matches the Cloudflare Worker's BRIDGE_TOKEN secret, and restart the bridge after changing it.", response.status()));
+            };
+
+            let bearer = format!("Bearer {token}");
+            let tests = [
+                ("X-Bridge-Token", token.as_str()),
+                ("Authorization", bearer.as_str()),
+            ];
+            let mut rejected = Vec::new();
+
+            for (header_name, header_value) in tests {
+                match client
+                    .get("http://127.0.0.1:11435/v1/models")
+                    .header(header_name, header_value)
+                    .send()
+                {
+                    Ok(response) if response.status().is_success() => {
+                        push_log(&logs, &log_path, format!("Bridge authentication accepted using {header_name} (HTTP {}).", response.status()));
+                        return;
+                    }
+                    Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
+                        rejected.push(format!("{header_name}: HTTP {}", response.status()));
+                        push_log(&logs, &log_path, format!("Bridge rejected {header_name} (HTTP {}).", response.status()));
+                    }
+                    Ok(response) => {
+                        let status = response.status();
+                        let body = response.text().unwrap_or_default();
+                        let excerpt = body.chars().take(240).collect::<String>();
+                        push_log(&logs, &log_path, format!("Bridge returned HTTP {status} for {header_name}; this is not an authentication rejection. Response: {excerpt}"));
+                    }
+                    Err(error) => {
+                        push_log(&logs, &log_path, format!("Bridge test using {header_name} could not reach the listener: {error}"));
+                    }
                 }
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().unwrap_or_default();
-                    let excerpt = body.chars().take(240).collect::<String>();
-                    push_log(&logs, &log_path, format!("Bridge endpoint responded with HTTP {status}; this is not an authentication success. Response: {excerpt}"));
-                }
-                Err(error) => push_log(&logs, &log_path, format!("Bridge auth test failed to reach the bridge: {error}")),
+            }
+
+            if rejected.len() == 2 {
+                push_log(&logs, &log_path, "Both X-Bridge-Token and Authorization Bearer were rejected with HTTP 401/403. The bridge process is using a different token or a different token environment-variable name. Use Restart Bridge to relaunch the configured bridge.mjs with Stratagem's saved token.");
             }
         });
     }
@@ -721,6 +827,7 @@ impl StratagemApp {
                     ui.add_space(9.0);
                     if ui.button("Start Ollama").clicked() { self.start_ollama(); }
                     if ui.button("Start Bridge").clicked() { self.start_bridge(); }
+                    if ui.button("Restart Bridge (apply saved token)").clicked() { self.restart_bridge(); }
                     if ui.button("Start Cloudflare Tunnel").clicked() { self.start_tunnel(); }
                     ui.separator();
                     if ui.button("Test Ollama API").clicked() { self.test_ollama(); }
@@ -1009,7 +1116,7 @@ impl eframe::App for StratagemApp {
                         }
                         ui.add_space(20.0);
                         ui.separator();
-                        ui.label(RichText::new("0.3.1 · STRATEGIST EDITION").size(9.0).color(MUTED));
+                        ui.label(RichText::new("0.3.3 · STRATEGIST EDITION").size(9.0).color(MUTED));
                         ui.label(RichText::new("Local-first. Your hardware.").size(10.0).color(MUTED));
                     });
                 });
