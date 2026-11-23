@@ -1,21 +1,22 @@
-name: Build Project Stratagem (Rust / Windows)
+name: Build Project Stratagem Windows App
 
 on:
   workflow_dispatch:
-  pull_request:
-    branches: [main]
+  release:
+    types: [published]
   push:
-    branches: [main]
-    tags: ["v*"]
+    tags:
+      - "0.*"
+      - "v0.*"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   windows-build:
     runs-on: windows-latest
     steps:
-      - name: Check out source
+      - name: Checkout release source
         uses: actions/checkout@v4
 
       - name: Install stable Rust
@@ -27,19 +28,29 @@ jobs:
       - name: Run tests
         run: cargo test --release
 
-      - name: Build Windows executable
+      - name: Build Windows GUI executable
         run: cargo build --release
 
-      - name: Stage portable executable
+      - name: Package portable app
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force -Path dist | Out-Null
           Copy-Item target/release/Project-Stratagem.exe dist/Project-Stratagem.exe
           Copy-Item README.md dist/README.txt
+          Compress-Archive -Path dist/Project-Stratagem.exe, dist/README.txt -DestinationPath dist/Project-Stragem-Windows-Portable.zip -Force
 
-      - name: Upload Windows app
+      - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Project-Stratagem-Windows
+          name: Project-Stratagem-Windows-Portable
           path: dist/*
           retention-days: 30
+
+      - name: Attach executable to GitHub Release
+        if: github.event_name == 'release' || startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name || github.ref_name }}
+        shell: pwsh
+        run: |
+          gh release upload "$env:RELEASE_TAG" dist/Project-Stratagem.exe dist/Project-Stratagem-Windows-Portable.zip dist/README.txt --clobber
