@@ -589,7 +589,7 @@ impl StratagemApp {
             if let Some(start) = line.find("https://") {
                 let tail = &line[start..];
                 let end = tail.find(char::is_whitespace).unwrap_or(tail.len());
-                let candidate = tail[..end].trim_end_matches(['.', ',', ')', '"', '\\'']);
+                let candidate = tail[..end].trim_end_matches(|ch: char| matches!(ch, '.' | ',' | ')' | '"' | '\\''));
                 if candidate.contains(".trycloudflare.com") {
                     return Some(candidate.to_owned());
                 }
@@ -815,12 +815,15 @@ impl StratagemApp {
             .show(ui, |ui| {
                 ui.heading("Clank World · Direct Quick Tunnel");
                 ui.label(RichText::new("Use these values when connecting directly to Stratagem's Cloudflare Quick Tunnel.").color(MUTED));
-                let base_url = self.current_tunnel_url().map(|url| format!("{url}/v1")).unwrap_or_else(|| "Tunnel URL not found yet. Start the tunnel and check Activity > tunnel.log.".to_owned());
+                let tunnel_url = self.current_tunnel_url();
+                let base_url = tunnel_url.map(|url| format!("{url}/v1"));
                 ui.label("Base URL");
-                ui.add(egui::TextEdit::singleline(&mut base_url.clone()).desired_width(f32::INFINITY));
-                if self.current_tunnel_url().is_some() && ui.button("Copy Clank World Base URL").clicked() {
-                    ui.ctx().copy_text(base_url.clone());
-                    self.saved_message = "Clank World Base URL copied".to_owned();
+                ui.label(RichText::new(base_url.as_deref().unwrap_or("Tunnel URL not found. Start the tunnel, then check Activity > tunnel.log.")).monospace());
+                if let Some(url) = base_url.as_ref() {
+                    if ui.button("Copy Clank World Base URL").clicked() {
+                        ui.ctx().copy_text(url.clone());
+                        self.saved_message = "Clank World Base URL copied".to_owned();
+                    }
                 }
                 if ui.button("Copy API key (bridge token)").clicked() && !self.token.trim().is_empty() {
                     ui.ctx().copy_text(self.token.trim().to_owned());
