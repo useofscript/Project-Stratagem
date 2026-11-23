@@ -12,7 +12,7 @@ Project Stratagem is a native Windows desktop control panel for the local Ollama
 - Token protection: encrypt the bridge token with Windows DPAPI for the current Windows account
 - Activity: view application events and open the individual service logs
 
-The app includes a redesigned command center, sidebar navigation, service-health indicators, quick actions, a Cloudflare Worker connection panel, Settings, and Activity. A chess king icon is used for the app window and Windows executable. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
+The app includes a redesigned command center, sidebar navigation, service-health indicators, quick actions, a Cloudflare Worker connection panel, Settings, and Activity. A chess king icon is used for the app window and Windows executable. Native Windows clipboard integration is enabled for Ctrl+C, Ctrl+X, Ctrl+V, and the app's Copy buttons. The Windows build is a standalone `Project-Stratagem.exe`; Ollama, Node.js, cloudflared, and your existing bridge script remain separate prerequisites.
 
 ## Requirements
 
@@ -21,6 +21,10 @@ The app includes a redesigned command center, sidebar navigation, service-health
 - [Node.js](https://nodejs.org/)
 - [Cloudflare Tunnel / cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/)
 - Your existing `bridge.mjs` gateway script
+
+## Clipboard support
+
+The Windows desktop build enables eframe's OS clipboard integration. Text fields support the normal Windows shortcuts (`Ctrl+C`, `Ctrl+X`, and `Ctrl+V`), and buttons that copy URLs, tokens, or logs write to the Windows clipboard rather than an app-local fallback.
 
 ## Build from source
 
