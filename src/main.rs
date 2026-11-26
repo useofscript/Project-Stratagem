@@ -101,13 +101,124 @@ fn default_worker_url() -> String {
     "https://ollama-gateway.pizzadoe173.workers.dev".to_owned()
 }
 
+/// Turns whatever the user pasted into a clean origin with no trailing
+/// `/`, `/v1`, or `/v1/chat/completions`. Without this, a pasted Base URL
+/// produced requests to `.../v1/v1/models`, which looks like an auth failure.
+fn normalize_base_url(raw: &str) -> String {
+    let mut url = raw.trim().trim_end_matches('/').to_owned();
+    for suffix in ["/chat/completions", "/models", "/v1"] {
+        if url.to_ascii_lowercase().ends_with(suffix) {
+            url.truncate(url.len() - suffix.len());
+            url = url.trim_end_matches('/').to_owned();
+        }
+    }
+    url
+}
+
+/// Short, single-line excerpt of a response body for the activity log.
+fn excerpt(body: &str) -> String {
+    let flat = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        "(empty body)".to_owned()
+    } else {
+        flat.chars().take(240).collect()
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Probe {
+    /// 2xx response.
+    Ok,
+    /// 401/403: the credential sent on this hop was rejected.
+    Rejected,
+    /// Cloudflare could not reach the tunnel/origin (502, 503, 504, 52x, 530).
+    Unreachable,
+    /// Some other HTTP status.
+    Other,
+    /// No HTTP response at all (DNS, refused connection, timeout).
+    NoResponse,
+}
+
+fn classify(status: reqwest::StatusCode) -> Probe {
+    match status.as_u16() {
+        200..=299 => Probe::Ok,
+        401 | 403 => Probe::Rejected,
+        502 | 503 | 504 | 520..=530 => Probe::Unreachable,
+        _ => Probe::Other,
+    }
+}
+
+/// Sends GET `{base}/v1/models` with one auth header and returns the
+/// classification plus a human-readable detail line.
+fn probe_models(client: &reqwest::blocking::Client, base: &str, header: &str, value: &str) -> (Probe, String) {
+    let url = format!("{base}/v1/models");
+    match client.get(&url).header(header, value).send() {
+        Ok(response) => {
+            let status = response.status();
+            let body = response.text().unwrap_or_default();
+            let kind = classify(status);
+            let detail = match kind {
+                Probe::Ok => {
+                    let count = serde_json::from_str::<serde_json::Value>(&body)
+                        .ok()
+                        .and_then(|json| {
+                            json.get("data")
+                                .or_else(|| json.get("models"))
+                                .and_then(|list| list.as_array())
+                                .map(|list| list.len())
+                        });
+                    match count {
+                        Some(count) => format!("HTTP {status}, {count} models"),
+                        None => format!("HTTP {status}"),
+                    }
+                }
+                _ => format!("HTTP {status}: {}", excerpt(&body)),
+            };
+            (kind, detail)
+        }
+        Err(error) => (Probe::NoResponse, error.to_string()),
+    }
+}
+
+fn http_client(seconds: u64) -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(seconds))
+        .build()
+        .map_err(|error| error.to_string())
+}
+
+/// True if a process command line runs the configured bridge script.
+/// Compares with normalized slashes and case, and also accepts a bare
+/// relative `bridge.mjs` (what you get from `cd folder; node bridge.mjs`).
+fn command_line_runs_bridge(command_line: &str, bridge_path: &str) -> bool {
+    let norm = |text: &str| text.replace('/', "\\").to_ascii_lowercase();
+    let line = norm(command_line);
+    let path = norm(bridge_path);
+    if !path.is_empty() && line.contains(&path) {
+        return true;
+    }
+    let file_name = Path::new(&path.replace('\\', "/"))
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    !file_name.is_empty()
+        && line
+            .split_whitespace()
+            .map(|arg| arg.trim_matches('"'))
+            .any(|arg| arg == file_name || arg.ends_with(&format!("\\{file_name}")))
+}
+
 fn default_bridge_path() -> String {
     let Some(home) = dirs::home_dir() else {
         return String::new();
     };
+    // Join one component at a time so Windows gets consistent backslashes.
+    // A mixed path like C:\Users\me\Downloads/ollama-gateway-setup/bridge.mjs
+    // never matched the command line of a manually started bridge.
+    let setup = home.join("Downloads").join("ollama-gateway-setup");
     let candidates = [
-        home.join("Downloads/ollama-gateway-setup/ollama-gateway-setup/bridge.mjs"),
-        home.join("Downloads/ollama-gateway-setup/bridge.mjs"),
+        setup.join("ollama-gateway-setup").join("bridge.mjs"),
+        setup.join("bridge.mjs"),
     ];
     candidates
         .iter()
@@ -298,13 +409,20 @@ impl StratagemApp {
         }
 
         let logs = Arc::new(Mutex::new(VecDeque::new()));
+        // Remember a decryption failure so it shows in Activity instead of the
+        // token silently coming back empty (which then breaks every request).
+        let mut token_error = None;
+        let token = match fs::read(&token_path) {
+            Ok(bytes) => unprotect_token(&bytes).unwrap_or_else(|error| {
+                token_error = Some(error);
+                String::new()
+            }),
+            Err(_) => String::new(),
+        };
         let app = Self {
             settings,
-            token: fs::read(&token_path)
-                .ok()
-                .and_then(|bytes| unprotect_token(&bytes).ok())
-                .unwrap_or_default(),
-            worker_api_key: "clank".to_owned(),
+            token,
+            worker_api_key: String::new(),
             show_token: false,
             page: Page::Dashboard,
             processes: HashMap::new(),
@@ -321,6 +439,9 @@ impl StratagemApp {
             icon_texture,
         };
         app.log("Project Stratagem started. Native Rust build.");
+        if let Some(error) = token_error {
+            app.log(format!("Saved bridge token could not be read ({error}). Enter it again in Settings and save it."));
+        }
         app
     }
 
@@ -441,7 +562,7 @@ impl StratagemApp {
 
     fn start_bridge(&mut self) {
         if port_is_open(11435) {
-            self.log("Port 11435 is already responding; not starting a duplicate bridge.");
+            self.log("Port 11435 is already responding; not starting a duplicate bridge. If you changed the token, use Restart Bridge so the running bridge picks it up.");
             return;
         }
         let script = PathBuf::from(self.settings.bridge_path.trim());
@@ -503,40 +624,58 @@ impl StratagemApp {
 
         #[cfg(windows)]
         {
-            let bridge_path = script.to_string_lossy().replace('\'', "''");
-            let command = r#"
-$bridgePath = '__BRIDGE_PATH__'
+            use std::os::windows::process::CommandExt;
+            // List every listener on 11435 as "PID<TAB>Name<TAB>CommandLine".
+            // The decision about what is safe to stop is made in Rust, using
+            // normalized path matching (see command_line_runs_bridge).
+            let list = r#"
 $owners = @(Get-NetTCPConnection -LocalPort 11435 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
 foreach ($ownerPid in $owners) {
     $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $ownerPid" -ErrorAction SilentlyContinue
-    if ($owner -and $owner.Name -ieq 'node.exe' -and $owner.CommandLine -and $owner.CommandLine.IndexOf($bridgePath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
-        Stop-Process -Id $ownerPid -Force -ErrorAction Stop
-        Write-Output "STOPPED:$ownerPid"
-    } elseif ($owner) {
-        Write-Output "SKIPPED:$ownerPid:$($owner.Name)"
-    }
+    if ($owner) { Write-Output ("{0}`t{1}`t{2}" -f $ownerPid, $owner.Name, $owner.CommandLine) }
 }
-"#.replace("__BRIDGE_PATH__", &bridge_path);
-
-            self.log("Restarting the configured bridge. Only a Node.js process running this exact bridge.mjs path can be stopped.");
-            match Command::new("powershell.exe")
-                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command"])
-                .arg(&command)
-                .output()
-            {
-                Ok(output) => {
-                    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-                    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-                    if !stdout.is_empty() {
-                        self.log(stdout);
-                    }
-                    if !output.status.success() {
-                        self.log(format!("PowerShell could not restart the bridge listener: {stderr}"));
-                    }
-                }
+"#;
+            self.log("Restarting the configured bridge. Only a node.exe process running bridge.mjs can be stopped.");
+            let output = Command::new("powershell.exe")
+                .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", list])
+                .creation_flags(0x08000000)
+                .output();
+            let output = match output {
+                Ok(output) => output,
                 Err(error) => {
                     self.log(format!("Could not run the safe bridge-restart check: {error}"));
                     return;
+                }
+            };
+            if !output.status.success() {
+                self.log(format!(
+                    "PowerShell could not list the bridge listener: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                ));
+            }
+            let bridge_path = script.to_string_lossy().into_owned();
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                let mut parts = line.splitn(3, '\t');
+                let (Some(pid), Some(name), command_line) = (parts.next(), parts.next(), parts.next().unwrap_or("")) else {
+                    continue;
+                };
+                let Ok(pid) = pid.trim().parse::<u32>() else { continue };
+                if name.eq_ignore_ascii_case("node.exe") && command_line_runs_bridge(command_line, &bridge_path) {
+                    let killed = Command::new("taskkill.exe")
+                        .args(["/PID", &pid.to_string(), "/F"])
+                        .creation_flags(0x08000000)
+                        .output()
+                        .map(|out| out.status.success())
+                        .unwrap_or(false);
+                    if killed {
+                        self.log(format!("Stopped old bridge (PID {pid}): {command_line}"));
+                    } else {
+                        self.log(format!("Could not stop old bridge PID {pid}. Close it manually."));
+                    }
+                } else {
+                    self.log(format!(
+                        "Left PID {pid} ({name}) running on port 11435; it is not node.exe running bridge.mjs. Command line: {command_line}"
+                    ));
                 }
             }
         }
@@ -581,6 +720,11 @@ foreach ($ownerPid in $owners) {
             self.log("Tunnel target URL is blank. Set it in Settings.");
             return;
         }
+        // Each Quick Tunnel gets a brand-new random URL. tunnel.log used to be
+        // appended forever, so the app kept showing the *previous* (dead) URL
+        // until the new one was printed. Start the log fresh for each tunnel.
+        let _ = fs::write(self.logs_dir.join("tunnel.log"), "");
+        self.log("A new Quick Tunnel means a NEW trycloudflare.com URL. Update the Worker's BRIDGE_URL to it, or Clank World requests will fail.");
         self.launch(
             "tunnel",
             &executable,
@@ -656,101 +800,115 @@ foreach ($ownerPid in $owners) {
         });
     }
 
-    fn test_worker_api_key(&mut self) {
-        let base = self.settings.worker_url.trim().trim_end_matches('/').to_owned();
-        let api_key = self.worker_api_key.trim().to_owned();
-        let logs = Arc::clone(&self.logs);
-        let log_path = self.log_path.clone();
-        if api_key.is_empty() {
-            self.log("Worker API key test skipped: enter the Clank World API key first.");
-            return;
-        }
-        self.log(format!("Testing Cloudflare Worker client authentication at {base}/v1/models ..."));
-        thread::spawn(move || {
-            let client = match reqwest::blocking::Client::builder().timeout(Duration::from_secs(10)).build() {
-                Ok(client) => client,
-                Err(error) => {
-                    push_log(&logs, &log_path, format!("Could not create Worker test client: {error}"));
-                    return;
-                }
-            };
-            match client.get(format!("{base}/v1/models")).bearer_auth(api_key).send() {
-                Ok(response) if response.status().is_success() => {
-                    let status = response.status();
-                    let body = response.text().unwrap_or_default();
-                    let models = serde_json::from_str::<serde_json::Value>(&body).ok()
-                        .and_then(|json| json.get("data").or_else(|| json.get("models"))).and_then(|list| list.as_array()).map(|list| list.len());
-                    push_log(&logs, &log_path, format!("Worker API key accepted (HTTP {status}). Gateway endpoint and client authentication are working.{}", models.map(|count| format!(" Returned {count} model entries.")).unwrap_or_default()));
-                }
-                Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
-                    push_log(&logs, &log_path, format!("Worker rejected the Clank World API key (HTTP {}). This is the Cloudflare Worker API_KEY/client credential, separate from the bridge token. Verify the API_KEY secret and the key entered in Clank World.", response.status()));
-                }
-                Ok(response) if response.status() == reqwest::StatusCode::BAD_GATEWAY => {
-                    let body = response.text().unwrap_or_default().chars().take(300).collect::<String>();
-                    push_log(&logs, &log_path, format!("Worker accepted the request but could not reach the local bridge (HTTP 502). This is an upstream/tunnel/bridge issue, not a client API-key rejection. Response: {body}"));
-                }
-                Ok(response) => {
-                    let status = response.status();
-                    let body = response.text().unwrap_or_default().chars().take(300).collect::<String>();
-                    push_log(&logs, &log_path, format!("Worker test returned HTTP {status}; not classified as an API-key failure. Response: {body}"));
-                }
-                Err(error) => push_log(&logs, &log_path, format!("Could not reach the Cloudflare Worker endpoint: {error}. Check Worker URL and internet connection.")),
-            }
-        });
+    /// Local-only check: bridge on 127.0.0.1 plus the Quick Tunnel.
+    fn test_bridge_auth(&mut self) {
+        self.diagnose_chain(false);
     }
 
-    fn test_bridge_auth(&mut self) {
+    /// Full check, including the Cloudflare Worker with the Clank World key.
+    fn test_worker_api_key(&mut self) {
+        if self.worker_api_key.trim().is_empty() {
+            self.log("Enter the Clank World API key (the Worker's API_KEY secret) in Settings first.");
+            return;
+        }
+        self.diagnose_chain(true);
+    }
+
+    /// Walks the request path hop by hop, the same way Clank World's request
+    /// travels, and names the first hop that fails:
+    ///
+    ///   Clank World --API_KEY--> Worker --X-Bridge-Token--> Quick Tunnel --> bridge.mjs --> Ollama
+    ///
+    /// A 401 at Clank World can come from the Worker (wrong API_KEY) *or* be
+    /// the bridge's 401 passed back through the Worker (Worker BRIDGE_TOKEN
+    /// does not match the local token). Those look identical from Clank
+    /// World, which is why this was so hard to pin down. This test tells
+    /// them apart by also sending a deliberately wrong key and comparing.
+    fn diagnose_chain(&mut self, include_worker: bool) {
         let token = self.token.trim().to_owned();
+        let api_key = self.worker_api_key.trim().to_owned();
+        let local = normalize_base_url(&self.settings.tunnel_target);
+        let worker = normalize_base_url(&self.settings.worker_url);
+        let tunnel = self.current_tunnel_url();
+        let env_name = self.settings.token_env.trim().to_owned();
         let logs = Arc::clone(&self.logs);
         let log_path = self.log_path.clone();
-        self.log("Testing both supported bridge authentication headers at http://127.0.0.1:11435/v1/models ...");
+        self.log("── Connection diagnosis started ──");
         thread::spawn(move || {
-            let client = match reqwest::blocking::Client::builder()
-                .timeout(Duration::from_secs(8))
-                .build()
-            {
+            let say = |message: String| push_log(&logs, &log_path, message);
+            let client = match http_client(12) {
                 Ok(client) => client,
-                Err(error) => {
-                    push_log(&logs, &log_path, format!("Could not create bridge test client: {error}"));
-                    return;
-                }
+                Err(error) => return say(format!("Could not create HTTP client: {error}")),
             };
+            if token.is_empty() {
+                return say("Stop: the bridge token in Settings is empty.".to_owned());
+            }
 
-            let bearer = format!("Bearer {token}");
-            let tests = [
-                ("X-Bridge-Token", token.as_str()),
-                ("Authorization", bearer.as_str()),
-            ];
-            let mut rejected = Vec::new();
+            // Hop 1: local bridge, using the header the Worker sends.
+            let (hop1, detail) = probe_models(&client, &local, "X-Bridge-Token", &token);
+            say(format!("1. Local bridge {local} with X-Bridge-Token → {detail}"));
+            match hop1 {
+                Probe::Ok => {}
+                Probe::NoResponse => {
+                    return say("   ✗ The bridge is not running or not on that port. Start Bridge, then test again.".to_owned());
+                }
+                Probe::Rejected => {
+                    let (bearer, _) = probe_models(&client, &local, "Authorization", &format!("Bearer {token}"));
+                    if bearer == Probe::Ok {
+                        return say("   ✗ The bridge accepts Authorization: Bearer but NOT X-Bridge-Token. The Worker sends X-Bridge-Token, so every Worker request fails. Make bridge.mjs accept X-Bridge-Token, or make the Worker send Authorization: Bearer.".to_owned());
+                    }
+                    return say(format!("   ✗ The running bridge has a DIFFERENT token than Settings. Most likely an old bridge is still running, or bridge.mjs reads a variable other than {env_name}. Click Restart Bridge, then test again."));
+                }
+                Probe::Unreachable | Probe::Other => {
+                    return say("   ✗ The bridge answered, but not with a model list. Check that Ollama is running (Test Ollama API) and read bridge.log.".to_owned());
+                }
+            }
+            say("   ✓ Local bridge and token are good.".to_owned());
 
-            for (header_name, header_value) in tests {
-                match client
-                    .get("http://127.0.0.1:11435/v1/models")
-                    .header(header_name, header_value)
-                    .send()
-                {
-                    Ok(response) if response.status().is_success() => {
-                        push_log(&logs, &log_path, format!("Bridge authentication accepted using {header_name} (HTTP {}).", response.status()));
-                        return;
+            // Hop 2: the public Quick Tunnel straight to the bridge.
+            match &tunnel {
+                None => say("2. No Quick Tunnel URL found in tunnel.log (tunnel not started by Stratagem). Skipping.".to_owned()),
+                Some(url) => {
+                    let (hop2, detail) = probe_models(&client, url, "X-Bridge-Token", &token);
+                    say(format!("2. Quick Tunnel {url} → {detail}"));
+                    if hop2 != Probe::Ok {
+                        return say("   ✗ The tunnel is down or still starting. Wait ~15 seconds or restart the tunnel, then copy the new URL into the Worker's BRIDGE_URL.".to_owned());
                     }
-                    Ok(response) if response.status() == reqwest::StatusCode::UNAUTHORIZED || response.status() == reqwest::StatusCode::FORBIDDEN => {
-                        rejected.push(format!("{header_name}: HTTP {}", response.status()));
-                        push_log(&logs, &log_path, format!("Bridge rejected {header_name} (HTTP {}).", response.status()));
-                    }
-                    Ok(response) => {
-                        let status = response.status();
-                        let body = response.text().unwrap_or_default();
-                        let excerpt = body.chars().take(240).collect::<String>();
-                        push_log(&logs, &log_path, format!("Bridge returned HTTP {status} for {header_name}; this is not an authentication rejection. Response: {excerpt}"));
-                    }
-                    Err(error) => {
-                        push_log(&logs, &log_path, format!("Bridge test using {header_name} could not reach the listener: {error}"));
-                    }
+                    say("   ✓ Tunnel reaches the bridge.".to_owned());
                 }
             }
 
-            if rejected.len() == 2 {
-                push_log(&logs, &log_path, "Both X-Bridge-Token and Authorization Bearer were rejected with HTTP 401/403. The bridge process is using a different token or a different token environment-variable name. Use Restart Bridge to relaunch the configured bridge.mjs with Stratagem's saved token.");
+            if !include_worker {
+                return say("Local checks passed. Enter the Clank World key and click Test Worker Key to test the Worker too.".to_owned());
+            }
+
+            // Hop 3: the Worker, exactly like Clank World calls it.
+            let bearer = format!("Bearer {api_key}");
+            let (hop3, detail) = probe_models(&client, &worker, "Authorization", &bearer);
+            say(format!("3. Worker {worker}/v1/models with Clank World key → {detail}"));
+            match hop3 {
+                Probe::Ok => say(format!(
+                    "   ✓ Whole chain works. In Clank World use Base URL {worker}/v1 and this exact API key. If Clank World still fails, re-paste the key there (watch for spaces)."
+                )),
+                Probe::Rejected => {
+                    // Who said no? Send a key that is definitely wrong. If the
+                    // Worker gives the same answer, it is rejecting our key too.
+                    let bogus = format!("Bearer stratagem-wrong-{}", uuid::Uuid::new_v4().simple());
+                    let (_, bogus_detail) = probe_models(&client, &worker, "Authorization", &bogus);
+                    if bogus_detail == detail {
+                        say("   ✗ The Worker rejected the API key itself. The key you entered does not match the Worker's API_KEY secret. Re-set it with: npx wrangler secret put API_KEY (type it, don't pipe it with echo, which adds a newline).".to_owned());
+                    } else {
+                        say(format!(
+                            "   ✗ The API key passed the Worker, but the bridge rejected the Worker's token. The Worker's BRIDGE_TOKEN secret does not match the token in Stratagem. Copy the token from Settings and run: npx wrangler secret put BRIDGE_TOKEN. (Wrong-key response was: {bogus_detail})"
+                        ));
+                    }
+                }
+                Probe::Unreachable => say(match &tunnel {
+                    Some(url) => format!("   ✗ The Worker cannot reach your PC. Its BRIDGE_URL is probably an old tunnel address. Set BRIDGE_URL to {url} and redeploy the Worker."),
+                    None => "   ✗ The Worker cannot reach your PC. Start the tunnel and set the Worker's BRIDGE_URL to the new trycloudflare.com address.".to_owned(),
+                }),
+                Probe::Other => say("   ✗ Unexpected Worker response. 404 usually means the Worker URL in Settings is wrong.".to_owned()),
+                Probe::NoResponse => say("   ✗ Could not reach the Worker at all. Check the Worker URL and your internet connection.".to_owned()),
             }
         });
     }
@@ -828,7 +986,7 @@ foreach ($ownerPid in $owners) {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("STRATEGEM CONTROL").size(10.0).strong().color(ACCENT));
+                        ui.label(RichText::new("STRATAGEM CONTROL").size(10.0).strong().color(ACCENT));
                         ui.add_space(7.0);
                         ui.heading(RichText::new("Your local AI.\nUnder command.").size(25.0).strong());
                         ui.label(RichText::new("Start your model server, bridge, and secure tunnel in one move.").color(MUTED));
@@ -887,7 +1045,7 @@ foreach ($ownerPid in $owners) {
                     ui.heading("Clank World · Cloudflare Gateway");
                     ui.label(RichText::new("Stable Worker endpoint · OpenAI-compatible API").color(MUTED).size(12.0));
                     ui.add_space(7.0);
-                    let base_url = format!("{}/v1", self.settings.worker_url.trim().trim_end_matches('/'));
+                    let base_url = format!("{}/v1", normalize_base_url(&self.settings.worker_url));
                     ui.label("Base URL");
                     ui.label(RichText::new(&base_url).monospace().color(TEXT));
                     if ui.button("Copy Clank World Base URL").clicked() {
@@ -1012,20 +1170,20 @@ foreach ($ownerPid in $owners) {
             .show(ui, |ui| {
                 ui.heading("Clank World · Cloudflare Gateway");
                 ui.label(RichText::new("Use the stable Worker URL in Clank World, not the temporary Quick Tunnel address.").color(MUTED));
-                let base_url = format!("{}/v1", self.settings.worker_url.trim().trim_end_matches('/'));
+                let base_url = format!("{}/v1", normalize_base_url(&self.settings.worker_url));
                 ui.label("Base URL");
                 ui.label(RichText::new(&base_url).monospace());
                 if ui.button("Copy Clank World Base URL").clicked() {
                     ui.ctx().copy_text(base_url);
                     self.saved_message = "Cloudflare Worker Base URL copied".to_owned();
                 }
-                ui.label(RichText::new("Clank World API Key = Cloudflare Worker API_KEY (currently configured as clank).").size(11.0).color(AMBER));
+                ui.label(RichText::new("Clank World API Key = the Cloudflare Worker API_KEY secret.").size(11.0).color(AMBER));
                 ui.label("Worker API key test (same key you enter in Clank World)");
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut self.worker_api_key).password(true).desired_width(f32::INFINITY));
                     if ui.button("Test Worker Key").clicked() { self.test_worker_api_key(); }
                 });
-                ui.label(RichText::new("This tests the Cloudflare Worker client credential independently from local bridge-token authentication. The test key is not saved to settings or logs.").size(11.0).color(MUTED));
+                ui.label(RichText::new("Tests every hop: local bridge, Quick Tunnel, then the Worker. It reports exactly which hop fails. The key is kept in memory only, never saved or logged.").size(11.0).color(MUTED));
                 ui.label(RichText::new("Bridge Token = Cloudflare Worker BRIDGE_TOKEN. This is sent by the Worker to the local bridge in the X-Bridge-Token header.").size(11.0).color(MUTED));
                 if let Some(tunnel) = self.current_tunnel_url() {
                     ui.separator();
@@ -1036,7 +1194,7 @@ foreach ($ownerPid in $owners) {
                         self.saved_message = "Current Quick Tunnel URL copied".to_owned();
                     }
                 }
-                if ui.button("Test local bridge authentication").clicked() {
+                if ui.button("Test bridge + tunnel (local only)").clicked() {
                     self.test_bridge_auth();
                 }
             });
@@ -1092,7 +1250,7 @@ foreach ($ownerPid in $owners) {
         });
         if copy_activity {
             if let Ok(entries) = self.logs.lock() {
-                ui.ctx().copy_text(entries.iter().cloned().collect::<Vec<_>>().join("\\n"));
+                ui.ctx().copy_text(entries.iter().cloned().collect::<Vec<_>>().join("\n"));
                 self.saved_message = "Activity log copied to clipboard".to_owned();
             }
         }
@@ -1167,7 +1325,7 @@ impl eframe::App for StratagemApp {
                         }
                         ui.add_space(20.0);
                         ui.separator();
-                        ui.label(RichText::new("0.3.3 · STRATEGIST EDITION").size(9.0).color(MUTED));
+                        ui.label(RichText::new("0.3.4 · STRATEGIST EDITION").size(9.0).color(MUTED));
                         ui.label(RichText::new("Local-first. Your hardware.").size(10.0).color(MUTED));
                     });
                 });
@@ -1246,4 +1404,46 @@ fn main() -> eframe::Result {
         options,
         Box::new(|cc| Ok(Box::new(StratagemApp::new(cc)))),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn base_url_strips_pasted_suffixes() {
+        let want = "https://gw.example.workers.dev";
+        for raw in [
+            "https://gw.example.workers.dev",
+            "https://gw.example.workers.dev/",
+            " https://gw.example.workers.dev/v1 ",
+            "https://gw.example.workers.dev/v1/",
+            "https://gw.example.workers.dev/v1/models",
+            "https://gw.example.workers.dev/v1/chat/completions",
+        ] {
+            assert_eq!(normalize_base_url(raw), want, "input: {raw:?}");
+        }
+        assert_eq!(normalize_base_url("http://127.0.0.1:11435"), "http://127.0.0.1:11435");
+    }
+
+    #[test]
+    fn bridge_match_handles_slashes_case_and_relative_launch() {
+        let configured = r"C:\Users\Ro\Downloads/ollama-gateway-setup/bridge.mjs";
+        assert!(command_line_runs_bridge(r#""C:\Program Files\nodejs\node.exe" C:\users\ro\downloads\ollama-gateway-setup\bridge.mjs"#, configured));
+        assert!(command_line_runs_bridge("node bridge.mjs", configured));
+        assert!(command_line_runs_bridge(r#"node ".\bridge.mjs""#, configured));
+        assert!(!command_line_runs_bridge("node server.js", configured));
+        assert!(!command_line_runs_bridge("node not-bridge.mjs", configured));
+    }
+
+    #[test]
+    fn status_classification() {
+        use reqwest::StatusCode;
+        assert_eq!(classify(StatusCode::OK), Probe::Ok);
+        assert_eq!(classify(StatusCode::UNAUTHORIZED), Probe::Rejected);
+        assert_eq!(classify(StatusCode::FORBIDDEN), Probe::Rejected);
+        assert_eq!(classify(StatusCode::BAD_GATEWAY), Probe::Unreachable);
+        assert_eq!(classify(StatusCode::from_u16(530).unwrap()), Probe::Unreachable);
+        assert_eq!(classify(StatusCode::NOT_FOUND), Probe::Other);
+    }
 }
